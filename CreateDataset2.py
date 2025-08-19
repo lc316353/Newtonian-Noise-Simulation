@@ -23,8 +23,8 @@ total_start_time=systime.time()
 
 #~~~~~~~~~~~~~~Save management~~~~~~~~~~~~~~#
 
-ID=1 #int(argv[1])
-tag="plane3"+str(ID)            #Dataset identifier
+ID=10 #int(argv[1])
+tag="plane9"+str(ID)            #Dataset identifier
 
 folder="testnew" #"/net/data_et/schillings/wavepackets"
 
@@ -35,9 +35,9 @@ useGPU=False                    #Set True if you have and want to use GPU-resour
 
 randomSeed=1                    #If None, use no seed
 
-isMonochromatic=True            #Toggles between monochromatic plane waves and gaussian wave packets
+isMonochromatic=True           #Toggles between monochromatic plane waves and gaussian wave packets
 
-NoR=5                           #Number of runs/realizations/wave events
+NoR=3                           #Number of runs/realizations/wave events
 
 
 #~~~~~~~~~~~~~~Constants~~~~~~~~~~~~~~#
@@ -49,7 +49,6 @@ M=211                           #Mirror mass of LF-ET in kg
 
 rho=3000                        #Density of rock in kg/m³
 c_p=6000                        #Sound velocity of rock #6000 m/s
-#c_s=4000
 
 
 #~~~~~~~~~~~~~~Domain~~~~~~~~~~~~~~#
@@ -58,10 +57,10 @@ L=12000                         #Length of simulation box in m
 Nx=100                          #Number of spatial steps for force calculation, choose even number
 dx=2*L/Nx                       #Spacial stepwidth in m
 
-xmax=L                          #Distance of wave starting point from 0
+xmax=6000                       #Distance of wave starting point from 0
 
 tmax=2*xmax/c_p                 #Time of simulation in s
-Nt=400                          #Number of time steps
+Nt=200                          #Number of time steps
 dt=tmax/Nt                      #Temporal stepwidth in s
 
 
@@ -128,7 +127,7 @@ t0s=np.zeros(NoR)
 
 if isMonochromatic:
     fs=np.ones(NoR) * fmono
-    sigmafs=np.ones(NoR) * 1e-10
+    sigmafs=np.zeros(NoR)
 else:
     fs=np.random.random(NoR) * (fmax-fmin)+fmin
     sigmafs=np.random.random(NoR) * (sigmafmax-sigmafmin)+sigmafmin
@@ -138,7 +137,9 @@ s_polarisations=np.random.random(NoR) * 2*pi
 
 #precalculation
 exp_const=-2*pi**2 * sigmafs**2
-cos_const=2*pi * fs
+sin_const=2*pi * fs
+
+force_const=rho * G * M * dx**3
 
 
 
@@ -185,17 +186,17 @@ for mirror in range(mirror_count):
 
 #~~~~~~~~~~~~~~Function definitions~~~~~~~~~~~~~~#
 
-def gaussian_wave_packet(x, t, x0, t0, A, exp_const, cos_const, phase=0):
+def gaussian_wave_packet(x, t, x0, t0, A, exp_const, sin_const, phase=0):
     
     diff = (x - x0) / c_p - (t - t0)
     exp_term = torch.exp(exp_const * diff**2)
-    cos_term = torch.cos(cos_const * diff + phase)
+    sin_term = torch.sin(sin_const * diff + phase)
     
-    wave = A * exp_term * cos_term
+    wave = A * exp_term * sin_term
     return wave
 
 def calc_force(drho, mirror):
-    F = G * M * dx**3 * torch.sum(geo_facts[mirror] * drho)
+    F = force_const * torch.sum(geo_facts[mirror] * drho)
     return F
     
 
@@ -212,14 +213,11 @@ for R in range(NoR):
     
     #force calculation
     for i,t in enumerate(time):
-        density_fluctuations=rho*gaussian_wave_packet(kx3D, t, x0s[R], t0s[R], As[R], exp_const[R], cos_const[R], phases[R])
+        density_fluctuations=gaussian_wave_packet(kx3D, t, x0s[R], t0s[R], As[R], exp_const[R], sin_const[R], phases[R])
         if useGPU:
             density_fluctuations.to(device=device)
         for mirror in range(mirror_count):
             forces[mirror][R][i]=calc_force(density_fluctuations,mirror)
-        
-    print(np.max(np.array(density_fluctuations)))
-    print(np.max(np.array(forces[1][R])))
 
 
 ####################################

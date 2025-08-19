@@ -37,8 +37,8 @@ total_start_time=systime.time()
 
 #~~~~~~~~~~~~~~Load and save management~~~~~~~~~~~~~~#
 
-ID=1#int(argv[1])
-tag="plane2"+str(ID)           #Name of the dataset to be loaded
+ID=10#int(argv[1])
+tag="plane9"+str(ID)           #Name of the dataset to be loaded
 folder="testnew" #"/net/data_et/schillings/monoIso"
 
 saveas="testnew/result"+tag     #Identifier for all savefiles produced
@@ -48,12 +48,12 @@ saveas="testnew/result"+tag     #Identifier for all savefiles produced
 
 useGPU=False                    #Set True if you have and want to use GPU-resources
 
-NoR=5                          #Number of wave events loaded into the memory
+NoR=20                          #Number of wave events loaded into the memory
 
 
 #~~~~~~~~~~~~~~Parameters~~~~~~~~~~~~~~#
                                
-state=[[536.35,0,0]]
+state=[[400,350,0],[-250,250,0],[200,-250,0],[-100,-100,0]]#[[536.35,0,0]]
 #[[400,350,0],[-250,250,0],[200,-250,0]] #[[-536.35,0,0],[-536.35*0.7,0,0]] 
                                 #Seismometer positions
 NoS=len(state)                  #Number of Seismometers
@@ -62,17 +62,17 @@ freq=ID                         #Frequency of the Wiener filter in Hz
 
 SNR=1e10                        #SNR as defined in earlier optimization attempts
 
-p=0                             #Ratio of P- and S-waves
+p=1                             #Ratio of P- and S-waves
 
-c_ratio=1.5 #2/3                  #Ratio c_s/c_p
+c_ratio=1 #2/3                  #Ratio c_s/c_p
 
 
 #~~~~~~~~~~~~~~Window Parameters~~~~~~~~~~~~~~#
 
-NoE=1                           #Number of wave events per time window
-
 NoW=5                          #Number of total time windows
 NoT=2                           #Number of runs without update of WF (test)
+
+NoE=1                           #Number of wave events per time window
 
 time_window_multiplier=1        #Time length of a time window to be evaluated in units of t_max
 twindow=None                    #If not none, used instead of time_window_multiplier to determine window length in s
@@ -97,14 +97,16 @@ whichMirror=1                   #
 class ReadData:
     tag=""
     folder=""
+    fileType=""
     
     dictionary={}
     
-    def __init__(self, tag, folder):
+    def __init__(self, tag, folder,fileType="settingFile"):
         self.tag=tag
         self.folder=folder
+        self.fileType=fileType
         
-        dataFile=np.loadtxt(folder+"/settingFile"+tag+".txt",dtype=str,delimiter="ö", comments="//")
+        dataFile=np.loadtxt(folder+"/"+fileType+tag+".txt",dtype=str,delimiter="ö", comments="//")
         
         for line in dataFile:
             key=line.split(" = ")[0]
@@ -211,11 +213,11 @@ all_cs=torch.tensor(c_p*(1-all_is_s)+c_s*all_is_s)
 
 #~~~~~~~~~~~~~~Analytical density function~~~~~~~~~~~~~~#
 
-def gaussian_wave_packet(x,t,x0,t0,A,exp_const,cos_const,c,phase=0):
+def gaussian_wave_packet(x,t,x0,t0,A,exp_const,sin_const,c,phase=0):
     
     diff = (x - x0) / c - (t - t0)
     exp_term = torch.exp(exp_const * diff**2)
-    sin_term = torch.cos(cos_const * diff + phase)
+    sin_term = torch.sin(sin_const * diff + phase)
     
     wave = A * exp_term * sin_term
     return wave
@@ -227,19 +229,19 @@ def gaussian_wave_packet_displacement(x,t,x0,t0,f0,sigmaf,c,A,phase=0):
     
     diff = (x - x0) / c - (t - t0)
     
-    VF = -1/(np.sqrt(2*pi)*sigmaf)*torch.tensor(1/2 * A * c * torch.exp(torch.tensor(-1j * phase - f0**2 / (2 * sigmaf**2))))
+    VF = 1/(np.sqrt(2*pi)*sigmaf)*torch.tensor(1/2 * A * c * torch.exp(torch.tensor(-1j * phase - f0**2 / (2 * sigmaf**2))))
     
     if phase==0:
-        wave = VF * torch.real(torch.tensor(sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf))))
+        wave = VF * torch.imag(torch.tensor(sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf))))
     else:
-        wave = VF/2 * (sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf)) + np.exp(2 * 1j * phase) * sp.erf((2*pi * sigmaf**2 * diff - 1j * f0) / (np.sqrt(2) * sigmaf)))
+        wave = -VF/2 * 1j * (sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf)) - np.exp(2 * 1j * phase) * sp.erf((2*pi * sigmaf**2 * diff - 1j * f0) / (np.sqrt(2) * sigmaf)))
     return torch.real(wave)
 
 def monochromatic_wave_displacement(x,t,x0,t0,f0,c,A,phase=0):
     
     diff = (x - x0) / c - (t - t0)
     
-    wave=-A*c/2/pi/f0*np.sin(2*pi*f0*diff+phase)
+    wave=A*c/2/pi/f0*np.cos(2*pi*f0*diff+phase)
     return wave
 
 
@@ -355,30 +357,25 @@ class Window:
         for n in range(self.NoE):
             R=self.windowR[n]
             kx2D=np.cos(all_polar_angles[R])*np.sin(all_azimuthal_angles[R])*self.x2d+np.sin(all_polar_angles[R])*np.sin(all_azimuthal_angles[R])*self.y2d
-            if all_is_s[R]:
-                c=c_s
-            else:
-                c=c_p
-            self.density_fluctuations+=gaussian_wave_packet(kx2D, timestep*dt, all_x0s[R], self.startTime[n], all_As[R], -2*pi**2*all_sigmafs[R]**2, 2*pi*all_fs[R], c, all_phases[R])
-        
+            self.density_fluctuations+=gaussian_wave_packet(kx2D, timestep*dt, all_x0s[R], self.startTime[n], all_As[R], -2*pi**2*all_sigmafs[R]**2, 2*pi*all_fs[R], all_cs[R], all_phases[R])
     
     def vizualizeWindow(self, animate=True, timestep=0, Lzoom=1000, NxPlot=100):
         #nice 2D-image+animation
         self.calculateVisualWindow(Lzoom,NxPlot)
         self.calculateDensityFluctuation()
         dis_scale=1/torch.max(self.displacements)*Lzoom/30
-        density_scale=1
         
         fullfig=plt.figure(figsize=(15,15))
         title=fullfig.suptitle("Density Fluctuations, Force and Seismometer Data",fontsize=16,y=0.95)
         
         forcecolor=["red","blue","green","orange","pink","lightblue","lightgreen","brown","magenta"]
         
+        #density fluctuation plot
         ax1=plt.subplot(2,6,(1,3))
         plt.title(r"density fluctuations in $(x,y,z=0)$")
         im=plt.imshow(np.array(self.density_fluctuations)[::-1,:],extent=[-Lzoom,Lzoom,-Lzoom,Lzoom],label=r"$\delta\rho$")
         plt.colorbar(ax=ax1,label=r"$\delta\rho/\rho$")
-        plt.clim(-torch.max(all_As[self.windowR])*density_scale,torch.max(all_As[self.windowR])*density_scale)
+        plt.clim(-torch.max(all_As[self.windowR]),torch.max(all_As[self.windowR]))
         plt.xlabel(r"$x$ [m]")
         plt.ylabel(r"$y$ [m]")
         vec=[]
@@ -387,7 +384,7 @@ class Window:
             pos=mirror_positions[mirror]
             di=mirror_directions[mirror]
             if float(max(torch.abs(self.forces[mirror])))>0:
-                vec.append(plt.quiver(pos[0],pos[1],self.forces[mirror,timestep]*di[0],self.forces[mirror,timestep]*di[1],color=forcecolor[mirror],angles='xy', scale_units='xy',scale=float(max(torch.abs(self.forces[mirror]))/Lzoom)))
+                vec.append(plt.quiver(pos[0],pos[1],self.forces[mirror,timestep]*di[0],self.forces[mirror,timestep]*di[1],color=forcecolor[mirror],angles='xy', scale_units='xy',scale=float(max(torch.abs(self.forces.flatten()))/Lzoom)))
             cav.append(plt.Circle((pos[0],pos[1]),cavity_r*(Lzoom/100),fill=True,edgecolor="k",linewidth=1.5))
             ax1.add_patch(cav[mirror])
             plt.text(pos[0],pos[1],str(mirror),fontsize=13.5,horizontalalignment='center',verticalalignment='center')
@@ -397,6 +394,7 @@ class Window:
         for s in range(self.NoS):
             stexts.append(plt.text(self.seismometer_positions[s,0],self.seismometer_positions[s,1],str(s),fontsize=13.5,horizontalalignment='center',verticalalignment='center'))
         
+        #force plot
         ax2=plt.subplot(2,6,(4,6))
         forceplot=[]
         for mirror in range(mirror_count):
@@ -413,6 +411,7 @@ class Window:
         ax2.yaxis.tick_right()
         ax2.legend()
         
+        #displacement plots
         axarray=[[],[],[]]
         lines=[[],[],[]]
         plotspace=2
@@ -445,12 +444,12 @@ class Window:
                     
         plt.subplots_adjust(hspace=0)
         
+        #animation
         stepw=2
         def update_full(i):
             i=stepw*i
             t=i*dt
             self.calculateDensityFluctuation(i)
-            self.density_fluctuations*=density_scale
             title.set_text(r"Density Fluctuations, Force and Seismometer Data at $t=$"+str(round(t,3)))
             im.set_array(np.array(self.density_fluctuations)[::-1,:])
             scat.set_offsets(np.array([np.array(self.seismometer_positions[:,0]+self.displacements[:,0,i]*dis_scale),np.array(self.seismometer_positions[:,1]+self.displacements[:,1,i]*dis_scale)]).T)
@@ -472,7 +471,7 @@ class Window:
                     lines[dim][s].set_ydata(self.displacements[s][dim][:i+1])
         
         if animate:
-            anima=ani.FuncAnimation(fig=fullfig, func=update_full, frames=int((int(tmax/dt)+1)/stepw),interval=max(1,int(5/stepw)))
+            anima=ani.FuncAnimation(fig=fullfig, func=update_full, frames=int((int(Ntwindow)+1)/stepw),interval=max(1,int(5/stepw)))
             anima.save("fullanimation3D"+str(tag)+"_"+str(self.ID)+".gif")
         else:
             update_full(timestep//stepw)
@@ -700,7 +699,6 @@ def residual(seismometer_positions, NoS, freq, SNR=1e10, p=1, mirror=0, NoTr=NoW
 #combination of mirrors
 def combinedResidual(seismometer_positions, NoS, freq, SNR=1e10, p=1, method="mean", NoTr=NoW-NoT, NoT=NoT):
     
-    
     results=[]
     for mirror in mirror_count:
         results.append(residual(seismometer_positions, NoS, freq, SNR, p, mirror, NoTr, NoT, False))
@@ -723,10 +721,10 @@ def combinedResidual(seismometer_positions, NoS, freq, SNR=1e10, p=1, method="me
 
 #~~~~~~~~~~~~~~Calculate stuff~~~~~~~~~~~~~~#
 result,residual_dict=residual(state, NoS, freq, SNR, p, mirror=1)
-print(result)
+print(residual_dict)
 
-exampleWindow=Window(3,Ntwindow=Nt,NoE=NoE,seismometer_positions=state,NoS=NoS,randomlyPlaced=randomlyPlaced)
-exampleWindow.vizualizeWindow(animate=False,timestep=360,Lzoom=1000)
+exampleWindow=Window(0,Ntwindow=Ntwindow,NoE=NoE,seismometer_positions=state,NoS=NoS,randomlyPlaced=randomlyPlaced)
+exampleWindow.vizualizeWindow(animate=False,timestep=199,Lzoom=1000)
 
 total_time=(systime.time()-total_start_time)/60
 print("#total time: "+str(total_time)+" min")
@@ -735,11 +733,30 @@ print("#total time: "+str(total_time)+" min")
 #~~~~~~~~~~~~~~Save results~~~~~~~~~~~~~~#
 
 with open(saveas+".txt", "a+") as f:
-    f.write(str(result)+"\n")
-    f.write(str(residual_dict["residual_exp_err"])+"\n")
-    f.write(str(residual_dict["residual_theo"])+"\n")
-    f.write(str(state)+"\n")
-    f.write("#total time: "+str(total_time)+" min\n")
+    f.write("dataset = "+tag+"\n")
+    f.write("NoR = "+str(NoR)+"\n")
+    f.write("N = "+str(NoS)+"\n")
+    f.write("f = "+str(freq)+"\n")
+    f.write("SNR = "+str(SNR)+"\n")
+    f.write("p = "+str(p)+"\n")
+    f.write("c_ratio = "+str(c_ratio)+"\n")
+    f.write("state = "+str(state)+"\n")
+    
+    f.write("NoW = "+str(NoW)+"\n")
+    f.write("NoT = "+str(NoT)+"\n")
+    f.write("NoE = "+str(NoE)+"\n")
+    f.write("time_window_multiplier = "+str(time_window_multiplier)+"\n")
+    f.write("twindow = "+str(twindow)+"\n")
+    f.write("randomlyPlaced = "+str(randomlyPlaced)+"\n")
+    
+    f.write("add_cavern_term_to_force = "+str(add_cavern_term_to_force)+"\n")
+    f.write("whichMirror = "+str(whichMirror)+"\n")
+    
+    f.write("residual_exp = "+str(result)+"\n")
+    f.write("residual_exp_err = "+str(residual_dict["residual_exp_err"])+"\n")
+    f.write("residual_theo = "+str(residual_dict["residual_theo"])+"\n")
+    f.write("useGPU = "+str(useGPU)+"\n")
+    f.write("#runtime = "+str(total_time)+" min\n")
     
     
     

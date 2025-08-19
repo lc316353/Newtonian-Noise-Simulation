@@ -203,11 +203,11 @@ all_cs=torch.tensor(c_p*(1-all_is_s)+c_s*all_is_s)
 
 #~~~~~~~~~~~~~~Analytical density function~~~~~~~~~~~~~~#
 
-def gaussian_wave_packet(x,t,x0,t0,A,exp_const,cos_const,c,phase=0):
+def gaussian_wave_packet(x,t,x0,t0,A,exp_const,sin_const,c,phase=0):
     
     diff = (x - x0) / c - (t - t0)
     exp_term = torch.exp(exp_const * diff**2)
-    sin_term = torch.cos(cos_const * diff + phase)
+    sin_term = torch.sin(sin_const * diff + phase)
     
     wave = A * exp_term * sin_term
     return wave
@@ -219,19 +219,19 @@ def gaussian_wave_packet_displacement(x,t,x0,t0,f0,sigmaf,c,A,phase=0):
     
     diff = (x - x0) / c - (t - t0)
     
-    VF = -1/(np.sqrt(2*pi)*sigmaf)*torch.tensor(1/2 * A * c * torch.exp(torch.tensor(-1j * phase - f0**2 / (2 * sigmaf**2))))
+    VF = 1/(np.sqrt(2*pi)*sigmaf)*torch.tensor(1/2 * A * c * torch.exp(torch.tensor(-1j * phase - f0**2 / (2 * sigmaf**2))))
     
     if phase==0:
-        wave = VF * torch.real(torch.tensor(sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf))))
+        wave = VF * torch.imag(torch.tensor(sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf))))
     else:
-        wave = VF/2 * (sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf)) + np.exp(2 * 1j * phase) * sp.erf((2*pi * sigmaf**2 * diff - 1j * f0) / (np.sqrt(2) * sigmaf)))
+        wave = -VF/2 * 1j * (sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf)) - np.exp(2 * 1j * phase) * sp.erf((2*pi * sigmaf**2 * diff - 1j * f0) / (np.sqrt(2) * sigmaf)))
     return torch.real(wave)
 
 def monochromatic_wave_displacement(x,t,x0,t0,f0,c,A,phase=0):
     
     diff = (x - x0) / c - (t - t0)
     
-    wave=-A*c/2/pi/f0*np.sin(2*pi*f0*diff+phase)
+    wave=A*c/2/pi/f0*np.cos(2*pi*f0*diff+phase)
     return wave
 
 
@@ -551,14 +551,30 @@ print("nans:",residual_dict["nan_count"])
 #~~~~~~~~~~~~~~Save results~~~~~~~~~~~~~~#
 
 with open(saveas+".txt", "a+") as f:
-    f.write(str(result)+"\n")
-    f.write(str(residual_dict["residual_exp_err"])+"\n")
-    f.write(str(residual_dict["residual_theo"])+"\n")
-    if type(state)==type([]):
-        f.write(str(state)+"\n")
-    else:
-        f.write(str(state.tolist())+"\n")
-    f.write("#total time: "+str(total_time)+" min\n")
+    f.write("dataset = "+tag+"\n")
+    f.write("NoR = "+str(NoR)+"\n")
+    f.write("N = "+str(NoS)+"\n")
+    f.write("f = "+str(freq)+"\n")
+    f.write("SNR = "+str(SNR)+"\n")
+    f.write("p = "+str(p)+"\n")
+    f.write("c_ratio = "+str(c_ratio)+"\n")
+    f.write("state = "+str(state)+"\n")
+    
+    f.write("NoW = "+str(NoW)+"\n")
+    f.write("NoT = "+str(NoT)+"\n")
+    f.write("NoE = "+str(NoE)+"\n")
+    f.write("time_window_multiplier = "+str(time_window_multiplier)+"\n")
+    f.write("twindow = "+str(twindow)+"\n")
+    f.write("randomlyPlaced = "+str(randomlyPlaced)+"\n")
+    
+    f.write("add_cavern_term_to_force = "+str(add_cavern_term_to_force)+"\n")
+    f.write("whichMirror = "+str(whichMirror)+"\n")
+    
+    f.write("residual_exp = "+str(result)+"\n")
+    f.write("residual_exp_err = "+str(residual_dict["residual_exp_err"])+"\n")
+    f.write("residual_theo = "+str(residual_dict["residual_theo"])+"\n")
+    f.write("useGPU = "+str(useGPU)+"\n")
+    f.write("#runtime = "+str(total_time)+" min\n")
 
 """
 bnd=1000
