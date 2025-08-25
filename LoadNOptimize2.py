@@ -322,7 +322,7 @@ class Window:
             #sigma=np.sqrt(torch.mean(plane_wave_displacement_analytic(0, 0, 0, 0, all_fs[self.windowR], all_sigmafs[self.windowR], all_cs[self.windowR], all_As[self.windowR])**2))/SNR*np.sqrt(self.Ntwindow)
             #sigma=np.sqrt(np.mean(np.max(np.sqrt(np.sum(np.array(self.displacements)**2,axis=1)),axis=-1)**2))/SNR*np.sqrt(self.Ntwindow)
             #maximum=float(-plane_wave_displacement_analytic(0, 0, 0, 0, all_fs[self.windowR], all_sigmafs[self.windowR], all_cs[self.windowR], all_As[self.windowR]))
-            sigma=float(torch.sqrt(torch.mean((all_As[self.windowR]*all_cs[self.windowR]/SNR*np.sqrt(self.Ntwindow)/np.sqrt(3)/2)**2)))
+            sigma=float(torch.sqrt(torch.mean((all_As[self.windowR]*all_cs[self.windowR]/2/pi/all_fs[self.windowR]/SNR*np.sqrt(self.Ntwindow)/np.sqrt(3)/2)**2)))
             #sigma=np.sqrt(np.mean(np.max(np.array(self.displacements),axis=-1)**2))/SNR*np.sqrt(self.Ntwindow)/2
             #sigma=np.sqrt(np.mean(maximum**2))/SNR*np.sqrt(self.Ntwindow)/2/np.sqrt(3)
         else:
@@ -444,7 +444,7 @@ def frequencyWienerFilter(seismometer_positions,NoS,freq,SNR=1e10,p=1,mirror=0,t
         
     #WF
     inv_data_self_CPSD=torch.linalg.inv(data_self_CPSD)
-    WF_FS=torch.einsum("ij,i->j",inv_data_self_CPSD,signal_data_CPSD)
+    WF_FS=torch.einsum("ij,j->i",inv_data_self_CPSD,signal_data_CPSD)
     
     WFDict={"signal_data_CPSD":signal_data_CPSD,"data_self_CPSD":data_self_CPSD,"signal_self_PSD":signal_self_PSD,"inv_data_self_CPSD":inv_data_self_CPSD,"WF":WF_FS,"nan_count":nan_count}
     
@@ -499,6 +499,7 @@ def evaluateFrequencyWienerFilter(WFDict,seismometer_positions,NoS,freq,SNR=1e10
     residual_exp_err=0.5*torch.sqrt(residual_exp)/np.sqrt(len(errorarray))*torch.sqrt((torch.std(errorarray)/torch.mean(errorarray))**2+(torch.std(signalarray)/torch.mean(signalarray))**2)
     residual_theo=torch.sqrt(1-torch.matmul(np.conj(signal_data_CPSD),torch.matmul(inv_data_self_CPSD,signal_data_CPSD))/signal_self_PSD)
     residual_dict={"residual_exp":float(residual_exp), "residual_exp_err":float(residual_exp_err), "residual_theo":float(np.abs(residual_theo)), "nan_count":nan_count}
+    residual_dict.update(WFDict)
     return residual_dict
     
 
@@ -573,6 +574,12 @@ with open(saveas+".txt", "a+") as f:
     f.write("residual_exp = "+str(result)+"\n")
     f.write("residual_exp_err = "+str(residual_dict["residual_exp_err"])+"\n")
     f.write("residual_theo = "+str(residual_dict["residual_theo"])+"\n")
+    
+    f.write("WF = "+str(np.array(residual_dict["WF"]).tolist())+"\n")
+    f.write("data_self_CPSD = "+str(np.array(residual_dict["data_self_CPSD"]).tolist())+"\n")
+    f.write("signal_data_CPSD = "+str(np.array(residual_dict["signal_data_CPSD"]).tolist())+"\n")
+    f.write("signal_self_PSD = "+str(residual_dict["signal_self_PSD"].item())+"\n")
+    
     f.write("useGPU = "+str(useGPU)+"\n")
     f.write("#runtime = "+str(total_time)+" min\n")
 

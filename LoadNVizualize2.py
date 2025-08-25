@@ -37,11 +37,11 @@ total_start_time=systime.time()
 
 #~~~~~~~~~~~~~~Load and save management~~~~~~~~~~~~~~#
 
-ID=10#int(argv[1])
-tag="plane9"+str(ID)           #Name of the dataset to be loaded
+ID=1#int(argv[1])
+tag="plane"+str(ID)           #Name of the dataset to be loaded
 folder="testnew" #"/net/data_et/schillings/monoIso"
 
-saveas="testnew/result"+tag     #Identifier for all savefiles produced
+saveas="testnew/resultFile"+tag     #Identifier for all savefiles produced
 
 
 #~~~~~~~~~~~~~~General~~~~~~~~~~~~~~#
@@ -268,6 +268,8 @@ class Window:
     
     NxPlot=100
     
+    forcecolor=["red","blue","green","orange","pink","lightblue","lightgreen","brown","magenta"]
+    
     x2d=torch.zeros((NxPlot,NxPlot))
     y2d=torch.zeros((NxPlot,NxPlot))
     density_fluctuations=torch.zeros((NxPlot,NxPlot))
@@ -332,7 +334,7 @@ class Window:
             #sigma=np.sqrt(torch.mean(plane_wave_displacement_analytic(0, 0, 0, 0, all_fs[self.windowR], all_sigmafs[self.windowR], all_cs[self.windowR], all_As[self.windowR])**2))/SNR*np.sqrt(self.Ntwindow)
             #sigma=np.sqrt(np.mean(np.max(np.sqrt(np.sum(np.array(self.displacements)**2,axis=1)),axis=-1)**2))/SNR*np.sqrt(self.Ntwindow)
             #maximum=float(-plane_wave_displacement_analytic(0, 0, 0, 0, all_fs[self.windowR], all_sigmafs[self.windowR], all_cs[self.windowR], all_As[self.windowR]))
-            sigma=float(torch.sqrt(torch.mean((all_As[self.windowR]*all_cs[self.windowR]/SNR*np.sqrt(self.Ntwindow)/np.sqrt(3)/2)**2)))
+            sigma=float(torch.sqrt(torch.mean((all_As[self.windowR]*all_cs[self.windowR]/2/pi/all_fs[self.windowR]/SNR*np.sqrt(self.Ntwindow)/np.sqrt(3)/2)**2)))
             #sigma=np.sqrt(np.mean(np.max(np.array(self.displacements),axis=-1)**2))/SNR*np.sqrt(self.Ntwindow)/2
             #sigma=np.sqrt(np.mean(maximum**2))/SNR*np.sqrt(self.Ntwindow)/2/np.sqrt(3)
         else:
@@ -368,8 +370,6 @@ class Window:
         fullfig=plt.figure(figsize=(15,15))
         title=fullfig.suptitle("Density Fluctuations, Force and Seismometer Data",fontsize=16,y=0.95)
         
-        forcecolor=["red","blue","green","orange","pink","lightblue","lightgreen","brown","magenta"]
-        
         #density fluctuation plot
         ax1=plt.subplot(2,6,(1,3))
         plt.title(r"density fluctuations in $(x,y,z=0)$")
@@ -384,7 +384,7 @@ class Window:
             pos=mirror_positions[mirror]
             di=mirror_directions[mirror]
             if float(max(torch.abs(self.forces[mirror])))>0:
-                vec.append(plt.quiver(pos[0],pos[1],self.forces[mirror,timestep]*di[0],self.forces[mirror,timestep]*di[1],color=forcecolor[mirror],angles='xy', scale_units='xy',scale=float(max(torch.abs(self.forces.flatten()))/Lzoom)))
+                vec.append(plt.quiver(pos[0],pos[1],self.forces[mirror,timestep]*di[0],self.forces[mirror,timestep]*di[1],color=self.forcecolor[mirror],angles='xy', scale_units='xy',scale=float(max(torch.abs(self.forces.flatten()))/Lzoom)))
             cav.append(plt.Circle((pos[0],pos[1]),cavity_r*(Lzoom/100),fill=True,edgecolor="k",linewidth=1.5))
             ax1.add_patch(cav[mirror])
             plt.text(pos[0],pos[1],str(mirror),fontsize=13.5,horizontalalignment='center',verticalalignment='center')
@@ -398,7 +398,7 @@ class Window:
         ax2=plt.subplot(2,6,(4,6))
         forceplot=[]
         for mirror in range(mirror_count):
-            forceplot.append(ax2.plot(self.time,self.forces[mirror],label="◯"+str(mirror),color=forcecolor[mirror])[0])
+            forceplot.append(ax2.plot(self.time,self.forces[mirror],label="◯"+str(mirror),color=self.forcecolor[mirror])[0])
         #estimateplot=ax2.plot(time,estimate,label="estimate")[0]
         #diffplot=ax2.plot(time,force-estimate,label="difference",color="red")[0]
         plt.xlim(0,np.max(self.time))
@@ -477,39 +477,55 @@ class Window:
             update_full(timestep//stepw)
             plt.savefig("windowAtTimeStep"+str(timestep)+str(tag)+"_"+str(self.ID)+".svg")
             
+    def visualizeForce(self, mirrors="all"):
         
-        #animate_full()
-        """
-        #Force Plot
-        forcefig=plt.figure()
-        plt.xlabel(r"time $t$")
-        plt.ylabel(r"Force $F$")
-        plt.title("mirror x-Noise")
-        plt.plot(time,self.forces[mirror])
-        
-        #Seismometer Data
-        seismometer_numbers=[0]
         plt.figure()
-        plt.title("example displacement of seismometer")
-        plt.xlabel(r"$t$")
-        plt.ylabel(r"displacement $d$")
-        for s in seismometer_numbers:
-            if s<NoS:
-                plt.plot(time,self.displacements[s][0],label="seismometer "+str(s)+" x-data")
-                plt.plot(time,self.displacements[s][1],label="seismometer "+str(s)+" y-data")
-                plt.plot(time,self.displacements[s][2],label="seismometer "+str(s)+" z-data")
+        plt.title(r"mirror forces")
+        plt.ylabel(r"force $F_M(t)$ [N]")
+        plt.xlabel(r"time $t$ [s]")
+
+        if type(mirrors)==int:
+            plt.plot(self.time,self.forces[mirrors],label="◯"+str(mirrors),color=self.forcecolor[mirrors])
+        elif type(mirrors)==list:
+            for mirror in mirrors:
+                plt.plot(self.time,self.forces[mirror],label="◯"+str(mirror),color=self.forcecolor[mirror])
+        else:
+            for mirror in range(mirror_count):
+                plt.plot(self.time,self.forces[mirror],label="◯"+str(mirror),color=self.forcecolor[mirror])
+                #estimateplot=ax2.plot(time,estimate,label="estimate")[0]
+                #diffplot=ax2.plot(time,force-estimate,label="difference",color="red")[0]
+        
         plt.legend()
         
+    def visualizeDisplacement(self,seismometers="all"):
         
-        def update(i):
-            t=i*dt
-            ax.set_title(r"density fluctuations in $(x,y)$ at $t=$"+str(round(t,3)))
-            self.calculateDensityFluctuation(i)
-            im.set_array(np.array(self.density_fluctuations)[:,::-1].T)
-            scat.set_offsets(torch.tensor([self.seismometer_positions[:,0]+self.displacements[:,0,i]*dis_scale,self.seismometer_positions[:,1]+self.displacements[:,1,i]*dis_scale]).T)
-            vec.set_UVC(self.forces[mirror,i],0)
+        plt.figure()
+        plt.title("seismometer displacements")
+        plt.xlabel(r"time $t$ [s]")
+        plt.ylabel(r"displacement $\vec\xi$ [m]")
         
-        """
+        direction=[r"$x$",r"$y$",r"$z$"]
+        max_dim=3
+        
+        if type(seismometers)==int:
+            for dim in range(max_dim):
+                color=[0,0,0]
+                color[dim]=0.2+0.8/NoS*seismometers
+                plt.plot(self.time,self.displacements[seismometers][dim],color=color,label=r"◊"+str(seismometers)+" "+str(direction[dim]))
+        elif type(seismometers)==list:
+            for s in seismometers:
+                for dim in range(max_dim):
+                    color=[0,0,0]
+                    color[dim]=0.2+0.8/NoS*s
+                    plt.plot(self.time,self.displacements[s][dim],color=color,label=r"◊"+str(s)+" "+str(direction[dim]))
+        else:
+            for s in range(NoS):
+                for dim in range(max_dim):
+                    color=[0,0,0]
+                    color[dim]=0.2+0.8/NoS*s
+                    plt.plot(self.time,self.displacements[s][dim],color=color,label=r"◊"+str(s)+" "+str(direction[dim]))
+                    
+        plt.legend()
         
             
 
@@ -625,7 +641,7 @@ def frequencyWienerFilter(seismometer_positions,NoS,freq,SNR=1e10,p=1,mirror=0,t
         
     #WF
     inv_data_self_CPSD=torch.linalg.inv(data_self_CPSD)
-    WF_FS=torch.einsum("ij,i->j",inv_data_self_CPSD,signal_data_CPSD)
+    WF_FS=torch.einsum("ij,j->i",inv_data_self_CPSD,signal_data_CPSD)
     
     WFDict={"signal_data_CPSD":signal_data_CPSD,"data_self_CPSD":data_self_CPSD,"signal_self_PSD":signal_self_PSD,"inv_data_self_CPSD":inv_data_self_CPSD,"WF":WF_FS,"nan_count":nan_count}
     
@@ -680,6 +696,7 @@ def evaluateFrequencyWienerFilter(WFDict,seismometer_positions,NoS,freq,SNR=1e10
     residual_exp_err=0.5*torch.sqrt(residual_exp)/np.sqrt(len(errorarray))*torch.sqrt((torch.std(errorarray)/torch.mean(errorarray))**2+(torch.std(signalarray)/torch.mean(signalarray))**2)
     residual_theo=torch.sqrt(1-torch.matmul(np.conj(signal_data_CPSD),torch.matmul(inv_data_self_CPSD,signal_data_CPSD))/signal_self_PSD)
     residual_dict={"residual_exp":float(residual_exp), "residual_exp_err":float(residual_exp_err), "residual_theo":float(np.abs(residual_theo)), "nan_count":nan_count}
+    residual_dict.update(WFDict)
     return residual_dict
     
 
@@ -721,10 +738,10 @@ def combinedResidual(seismometer_positions, NoS, freq, SNR=1e10, p=1, method="me
 
 #~~~~~~~~~~~~~~Calculate stuff~~~~~~~~~~~~~~#
 result,residual_dict=residual(state, NoS, freq, SNR, p, mirror=1)
-print(residual_dict)
 
 exampleWindow=Window(0,Ntwindow=Ntwindow,NoE=NoE,seismometer_positions=state,NoS=NoS,randomlyPlaced=randomlyPlaced)
-exampleWindow.vizualizeWindow(animate=False,timestep=199,Lzoom=1000)
+exampleWindow.vizualizeWindow(animate=False,timestep=199,Lzoom=6000)
+#exampleWindow.visualizeDisplacement(0)
 
 total_time=(systime.time()-total_start_time)/60
 print("#total time: "+str(total_time)+" min")
@@ -755,6 +772,12 @@ with open(saveas+".txt", "a+") as f:
     f.write("residual_exp = "+str(result)+"\n")
     f.write("residual_exp_err = "+str(residual_dict["residual_exp_err"])+"\n")
     f.write("residual_theo = "+str(residual_dict["residual_theo"])+"\n")
+    
+    f.write("WF = "+str(np.array(residual_dict["WF"]).tolist())+"\n")
+    f.write("data_self_CPSD = "+str(np.array(residual_dict["data_self_CPSD"]).tolist())+"\n")
+    f.write("signal_data_CPSD = "+str(np.array(residual_dict["signal_data_CPSD"]).tolist())+"\n")
+    f.write("signal_self_PSD = "+str(residual_dict["signal_self_PSD"].item())+"\n")
+    
     f.write("useGPU = "+str(useGPU)+"\n")
     f.write("#runtime = "+str(total_time)+" min\n")
     
