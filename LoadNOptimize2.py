@@ -127,7 +127,7 @@ if data.dictionary["randomSeed"]=="None":
     randomSeed=None
 else:
     randomSeed=int(data.dictionary["randomSeed"])
-    np.random.seed(randomSeed)
+    np.random.seed(randomSeed+1)
     
 isMonochromatic=data.dictionary["isMonochromatic"]
 
@@ -219,7 +219,7 @@ def gaussian_wave_packet_displacement(x,t,x0,t0,f0,sigmaf,c,A,phase=0):
     
     diff = (x - x0) / c - (t - t0)
     
-    VF = 1/(np.sqrt(2*pi)*sigmaf)*torch.tensor(1/2 * A * c * torch.exp(torch.tensor(-1j * phase - f0**2 / (2 * sigmaf**2))))
+    VF = 1/(np.sqrt(2*pi)*sigmaf)*torch.tensor(1/2 * A * c_p * torch.exp(torch.tensor(-1j * phase - f0**2 / (2 * sigmaf**2))))
     
     if phase==0:
         wave = VF * torch.imag(torch.tensor(sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf))))
@@ -231,7 +231,7 @@ def monochromatic_wave_displacement(x,t,x0,t0,f0,c,A,phase=0):
     
     diff = (x - x0) / c - (t - t0)
     
-    wave=A*c/2/pi/f0*np.cos(2*pi*f0*diff+phase)
+    wave=A*c_p/2/pi/f0*np.cos(2*pi*f0*diff+phase)
     return wave
 
 
@@ -607,4 +607,5 @@ result,residual_dict = residual(state,NoS,freq,SNR,p,whichMirror,NoW-NoT,NoT,Tru
     
 
     
+
     
