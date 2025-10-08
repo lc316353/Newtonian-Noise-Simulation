@@ -23,8 +23,8 @@ total_start_time=systime.time()
 
 #~~~~~~~~~~~~~~Save management~~~~~~~~~~~~~~#
 
-ID=10 #int(argv[1])
-tag="plane9"+str(ID)            #Dataset identifier
+ID=5 #int(argv[1])
+tag="half"+str(ID)            #Dataset identifier
 
 folder="testnew" #"/net/data_et/schillings/wavepackets"
 
@@ -35,9 +35,9 @@ useGPU=False                    #Set True if you have and want to use GPU-resour
 
 randomSeed=1                    #If None, use no seed
 
-isMonochromatic=True           #Toggles between monochromatic plane waves and gaussian wave packets
+isMonochromatic=True            #Toggles between monochromatic plane waves and Gaussian wave packets
 
-NoR=3                           #Number of runs/realizations/wave events
+NoR=10                          #Number of runs/realizations/wave events
 
 
 #~~~~~~~~~~~~~~Constants~~~~~~~~~~~~~~#
@@ -53,9 +53,9 @@ c_p=6000                        #Sound velocity of rock #6000 m/s
 
 #~~~~~~~~~~~~~~Domain~~~~~~~~~~~~~~#
 
-L=12000                         #Length of simulation box in m
+L=3000                          #Length of simulation box in m
 Nx=100                          #Number of spatial steps for force calculation, choose even number
-dx=2*L/Nx                       #Spacial stepwidth in m
+dx=2*L/Nx                       #Spacial stepwidth in m, should be >c_P/10/max(f_0)
 
 xmax=6000                       #Distance of wave starting point from 0
 
@@ -66,6 +66,7 @@ dt=tmax/Nt                      #Temporal stepwidth in s
 
 #~~~~~~~~~~~~~~Experiment config~~~~~~~~~~~~~~#
 
+depth=300                       #Upper domain cutoff (=L for full space)
 cavity_r=5                      #Radius of spherical cavern in m
 
 mirror_positions=[[64.12,0,0],
@@ -94,6 +95,7 @@ fmono=ID                        #The frequency of all monochromatic plane waves 
 sigmafmin=0.5
 sigmafmax=1                     #width of frequency of Gaussian wave-packet in Hz
 
+anisotropy="none"               #"none" for isotropy, "quad" for more waves from above, "left" for only waves from -x
 
 
 ########################################
@@ -118,6 +120,12 @@ if randomSeed!=None:
 #wave direction
 polar_angles=np.random.random(NoR) * 2*pi
 azimuthal_angles=np.arccos(2*np.random.random(NoR)-1)
+
+if anisotropy=="quad":
+    azimuthal_angles=np.arccos(2*np.random.random(NoR)**2-1)
+elif anisotropy=="left":
+    polar_angles=np.random.random(NoR) * pi - pi/2
+
 
 #packet properties
 As=np.random.random(NoR) * (Awavemax-Awavemin)+Awavemin
@@ -170,6 +178,7 @@ if useGPU:
 #integration constants from mirror geometry
 r3d=torch.sqrt(x3d**2+y3d**2+z3d**2)+1e-20
 cavity_kernel=r3d<L
+cavity_kernel*=z3d<depth
 
 r3ds=[]
 geo_facts=[]
@@ -240,6 +249,7 @@ if not os.path.exists(folder+"/settingFile"+tag+".txt"):
     f.write("t_max = "+str(tmax)+"\n")
     f.write("Nx = "+str(Nx)+"\n")
     f.write("Nt = "+str(Nt)+"\n")
+    f.write("depth = "+str(depth)+"\n")
     f.write("cavity_r = "+str(cavity_r)+"\n")
     f.write("mirror_positions = np.array("+str(list(mirror_positions))+")\n")
     f.write("mirror_directions = np.array("+str(list(mirror_directions))+")\n")
@@ -250,6 +260,7 @@ if not os.path.exists(folder+"/settingFile"+tag+".txt"):
     f.write("f_mono = "+str(fmono)+"\n")
     f.write("sigma_f_min = "+str(sigmafmin)+"\n")
     f.write("sigma_f_max = "+str(sigmafmax)+"\n")
+    f.write("anisotropy = "+str(anisotropy)+"\n")
     f.write("useGPU = "+str(useGPU)+"\n")
     
     f.write("#runtime = "+str(np.round((systime.time()-total_start_time)/60,2))+" min\n")
