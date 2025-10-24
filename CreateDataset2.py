@@ -6,6 +6,7 @@ Created on Thu Feb 13 16:26:01 2025
 """
 
 import numpy as np
+import math
 import torch
 import random as rd
 import scipy.constants as co
@@ -24,9 +25,9 @@ total_start_time=systime.time()
 #~~~~~~~~~~~~~~Save management~~~~~~~~~~~~~~#
 
 ID=5 #int(argv[1])
-tag="half"+str(ID)            #Dataset identifier
+tag="X"+str(ID)            #Dataset identifier
 
-folder="testnew" #"/net/data_et/schillings/wavepackets"
+folder="testset" #"/net/data_et/schillings/V2/wavepackets"
 
 
 #~~~~~~~~~~~~~~General~~~~~~~~~~~~~~#
@@ -35,7 +36,7 @@ useGPU=False                    #Set True if you have and want to use GPU-resour
 
 randomSeed=1                    #If None, use no seed
 
-isMonochromatic=True            #Toggles between monochromatic plane waves and Gaussian wave packets
+isMonochromatic=False           #Toggles between monochromatic plane waves and Gaussian wave packets
 
 NoR=10                          #Number of runs/realizations/wave events
 
@@ -71,13 +72,13 @@ cavity_r=5                      #Radius of spherical cavern in m
 
 mirror_positions=[[64.12,0,0],
                   [536.35,0,0],
-                  [64.12*0.5,64.12*np.sqrt(3)/2,0],
-                  [536.35*0.5,536.35*np.sqrt(3)/2,0]]      
+                  [64.12*0.5,64.12*math.sqrt(3)/2,0],
+                  [536.35*0.5,536.35*math.sqrt(3)/2,0]]      
                                 #Array of mirror position [x,y,z] in m
 mirror_directions=[[1,0,0],
                    [1,0,0],
-                   [0.5,np.sqrt(3)/2,0],
-                   [0.5,np.sqrt(3)/2,0]]     
+                   [0.5,math.sqrt(3)/2,0],
+                   [0.5,math.sqrt(3)/2,0]]     
                                 #Array of mirror free moving axis unit vectors
 mirror_count=len(mirror_positions)
 
@@ -114,31 +115,35 @@ if randomSeed!=None:
     rd.seed(randomSeed)
     np.random.seed(randomSeed)
     
+if useGPU:
+    device=torch.device("cuda")
+else:
+    device=torch.device("cpu")
     
 #~~~~~~~~~~~~~~Wave event parameter generation~~~~~~~~~~~~~~#
 
 #wave direction
-polar_angles=np.random.random(NoR) * 2*pi
-azimuthal_angles=np.arccos(2*np.random.random(NoR)-1)
+polar_angles=torch.tensor(np.random.random(NoR) * 2*pi, device=device)
+azimuthal_angles=torch.tensor(np.arccos(2*np.random.random(NoR)-1), device=device)
 
 if anisotropy=="quad":
-    azimuthal_angles=np.arccos(2*np.random.random(NoR)**2-1)
+    azimuthal_angles=torch.tensor(np.arccos(2*np.random.random(NoR)**2-1), device=device)
 elif anisotropy=="left":
-    polar_angles=np.random.random(NoR) * pi - pi/2
+    polar_angles=torch.tensor(np.random.random(NoR) * pi - pi/2, device=device)
 
 
 #packet properties
-As=np.random.random(NoR) * (Awavemax-Awavemin)+Awavemin
-phases=np.zeros(NoR)
-x0s=np.ones(NoR) * (-xmax)
-t0s=np.zeros(NoR)
+As=torch.tensor(np.random.random(NoR) * (Awavemax-Awavemin)+Awavemin, device=device)
+phases=torch.zeros(NoR, device=device)
+x0s=torch.ones(NoR, device=device) * (-xmax)
+t0s=torch.zeros(NoR, device=device)
 
 if isMonochromatic:
-    fs=np.ones(NoR) * fmono
-    sigmafs=np.zeros(NoR)
+    fs=torch.ones(NoR, device=device) * fmono
+    sigmafs=torch.zeros(NoR, device=device)
 else:
-    fs=np.random.random(NoR) * (fmax-fmin)+fmin
-    sigmafs=np.random.random(NoR) * (sigmafmax-sigmafmin)+sigmafmin
+    fs=torch.tensor(np.random.random(NoR) * (fmax-fmin)+fmin, device=device)
+    sigmafs=torch.tensor(np.random.random(NoR) * (sigmafmax-sigmafmin)+sigmafmin, device=device)
 
 #S-wave only
 s_polarisations=np.random.random(NoR) * 2*pi
@@ -149,6 +154,10 @@ sin_const=2*pi * fs
 
 force_const=rho * G * M * dx**3
 
+sin_polar=torch.sin(polar_angles)
+cos_polar=torch.cos(polar_angles)
+sin_azi=torch.sin(azimuthal_angles)
+cos_azi=torch.cos(azimuthal_angles)
 
 
 ##########################################
@@ -159,35 +168,28 @@ force_const=rho * G * M * dx**3
 #~~~~~~~~~~~~~~Domain preparation~~~~~~~~~~~~~~#
 
 #time and space
-time=np.linspace(0,tmax,Nt,endpoint=False)
-x=torch.linspace(-L+dx/2,L-dx/2,Nx)
-y=torch.linspace(-L+dx/2,L-dx/2,Nx)
-z=torch.linspace(-L+dx/2,L-dx/2,Nx)
-xyz=torch.meshgrid(x,y,z)
+time=torch.linspace(0, tmax, Nt+1, device=device)[:-1]
+x=torch.linspace(-L+dx/2, L-dx/2, Nx, device=device)
+y=torch.linspace(-L+dx/2, L-dx/2, Nx, device=device)
+z=torch.linspace(-L+dx/2, L-dx/2, Nx, device=device)
+xyz=torch.meshgrid(x, y, z, indexing="ij")
 x3d=xyz[1]
 y3d=xyz[0]
 z3d=xyz[2]
-
-if useGPU:
-    device=torch.device("cuda")
-    x3d.to(device=device)
-    y3d.to(device=device)
-    z3d.to(device=device)
-    
     
 #integration constants from mirror geometry
-r3d=torch.sqrt(x3d**2+y3d**2+z3d**2)+1e-20
+r3d=torch.sqrt(x3d**2+y3d**2+z3d**2) + 1e-20
 cavity_kernel=r3d<L
 cavity_kernel*=z3d<depth
 
 r3ds=[]
-geo_facts=[]
+geo_facts=torch.zeros((mirror_count,Nx,Nx,Nx),device=device)
 for mirror in range(mirror_count):
     pos=mirror_positions[mirror]
     di=mirror_directions[mirror]
     r3ds.append(torch.sqrt((x3d-pos[0])**2+(y3d-pos[1])**2+(z3d-pos[2])**2)+1e-20)
     cavity_kernel*=r3ds[mirror]>cavity_r
-    geo_facts.append(((x3d-pos[0])*di[0]+(y3d-pos[1])*di[1]+(z3d-pos[2])*di[2])/r3ds[mirror]**3)
+    geo_facts[mirror]=((x3d-pos[0])*di[0]+(y3d-pos[1])*di[1]+(z3d-pos[2])*di[2])/r3ds[mirror]**3
 for mirror in range(mirror_count):
     if useGPU:
         geo_facts[mirror].to(device=device)
@@ -204,6 +206,13 @@ def gaussian_wave_packet(x, t, x0, t0, A, exp_const, sin_const, phase=0):
     wave = A * exp_term * sin_term
     return wave
 
+def ricker_wavelet(x, t, x0, t0, A, sigma):
+    
+    diff = (x -x0) / c_p - (t - t0)
+    
+    wave = A * (1-(diff/sigma)**2) * np.exp(-diff**2/2/sigma**2)
+    return wave
+
 def calc_force(drho, mirror):
     F = force_const * torch.sum(geo_facts[mirror] * drho)
     return F
@@ -211,11 +220,12 @@ def calc_force(drho, mirror):
 
 #~~~~~~~~~~~~~~Calculation of Newtonian noise~~~~~~~~~~~~~~#
 
-forces=np.zeros((mirror_count,NoR,Nt))
+forces=torch.zeros((NoR,mirror_count,Nt), device=device)
+
 for R in range(NoR):
 
     #preparation    
-    kx3D=np.cos(polar_angles[R])*np.sin(azimuthal_angles[R])*x3d+np.sin(polar_angles[R])*np.sin(azimuthal_angles[R])*y3d+np.cos(azimuthal_angles[R])*z3d
+    kx3D=cos_polar[R]*sin_azi[R]*x3d+sin_polar[R]*sin_azi[R]*y3d+cos_azi[R]*z3d
     
     if useGPU:
         kx3D.to(device=device)
@@ -226,8 +236,8 @@ for R in range(NoR):
         if useGPU:
             density_fluctuations.to(device=device)
         for mirror in range(mirror_count):
-            forces[mirror][R][i]=calc_force(density_fluctuations,mirror)
-
+            forces[R][mirror][i]=calc_force(density_fluctuations,mirror)
+        
 
 ####################################
 #~~~~~~~~~~~~~~Saving~~~~~~~~~~~~~~#
@@ -269,18 +279,23 @@ if not os.path.exists(folder+"/settingFile"+tag+".txt"):
     
 #~~~~~~~~~~~~~~Write dataset~~~~~~~~~~~~~~#
 
+CPUdevice=torch.device("cpu")
+
 #mirror forces
-forces=np.array(forces)
+forces=np.array(forces.to(device=CPUdevice))
 for mirror in range(mirror_count):
-    np.save(folder+"/wave_event_result_force_"+str(mirror)+"_"+tag+".npy", forces[mirror])
+    np.save(folder+"/wave_event_result_force_"+str(mirror)+"_"+tag+".npy", forces[:,mirror])
    
 #wave events
-np.save(folder+"/wave_event_data_polar_angle_"+tag+".npy", polar_angles)
-np.save(folder+"/wave_event_data_azimuthal_angle_"+tag+".npy", azimuthal_angles)
-np.save(folder+"/wave_event_data_A_"+tag+".npy", As)
-np.save(folder+"/wave_event_data_phase_"+tag+".npy", phases)
-np.save(folder+"/wave_event_data_x0_"+tag+".npy", x0s)
-np.save(folder+"/wave_event_data_t0_"+tag+".npy", t0s)
-np.save(folder+"/wave_event_data_f0_"+tag+".npy", fs)
-np.save(folder+"/wave_event_data_sigmaf_"+tag+".npy", sigmafs)
+np.save(folder+"/wave_event_data_polar_angle_"+tag+".npy", polar_angles.to(device=CPUdevice))
+np.save(folder+"/wave_event_data_azimuthal_angle_"+tag+".npy", azimuthal_angles.to(device=CPUdevice))
+np.save(folder+"/wave_event_data_A_"+tag+".npy", As.to(device=CPUdevice))
+np.save(folder+"/wave_event_data_phase_"+tag+".npy", phases.to(device=CPUdevice))
+np.save(folder+"/wave_event_data_x0_"+tag+".npy", x0s.to(device=CPUdevice))
+np.save(folder+"/wave_event_data_t0_"+tag+".npy", t0s.to(device=CPUdevice))
+np.save(folder+"/wave_event_data_f0_"+tag+".npy", fs.to(device=CPUdevice))
+np.save(folder+"/wave_event_data_sigmaf_"+tag+".npy", sigmafs.to(device=CPUdevice))
 np.save(folder+"/wave_event_data_s_polarization_"+tag+".npy", s_polarisations)
+
+total_time=(systime.time()-total_start_time)/60
+print("#total time: "+str(total_time)+" min")

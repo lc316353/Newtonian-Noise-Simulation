@@ -9,6 +9,7 @@ import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 import numpy as np
+import math
 import torch
 import matplotlib.pyplot as plt
 import matplotlib.animation as ani
@@ -18,6 +19,7 @@ import time as systime
 from sys import argv
 import scipy.special as sp
 from scipy.optimize import differential_evolution
+from scipy import linalg
 
 #plotting defaults
 plt.close("all")
@@ -37,24 +39,24 @@ total_start_time=systime.time()
 
 #~~~~~~~~~~~~~~Load and save management~~~~~~~~~~~~~~#
 
-ID=1#int(argv[1])
-tag="plane"+str(ID)           #Name of the dataset to be loaded
-folder="testnew" #"/net/data_et/schillings/monoIso"
+ID=5 #int(argv[1])
+tag="X"+str(ID)           #Name of the dataset to be loaded
+folder="testset" #"/net/data_et/schillings/V2/monoIso"
 
-saveas="testnew/resultFile"+tag     #Identifier for all savefiles produced
+saveas="testset/resultFile"+tag     #Identifier for all savefiles produced
 
 
 #~~~~~~~~~~~~~~General~~~~~~~~~~~~~~#
 
 useGPU=False                    #Set True if you have and want to use GPU-resources
 
-NoR=20                          #Number of wave events loaded into the memory
+NoR=10                          #Number of wave events loaded into the memory
 
 
 #~~~~~~~~~~~~~~Parameters~~~~~~~~~~~~~~#
                                
-state=[[400,350,0],[-250,250,0],[200,-250,0],[-100,-100,0]]#[[536.35,0,0]]
-#[[400,350,0],[-250,250,0],[200,-250,0]] #[[-536.35,0,0],[-536.35*0.7,0,0]] 
+state=[[400,350,0],[-250,250,0],[200,-250,0],[-100,-100,0]]
+#[[400,350,0],[-250,250,0],[200,-250,0],[-100,-100,0]] #[[0,0,0],[536.35*0.3,0,0]] 
                                 #Seismometer positions
 NoS=len(state)                  #Number of Seismometers
 
@@ -64,13 +66,13 @@ SNR=1e10                        #SNR as defined in earlier optimization attempts
 
 p=1                             #Ratio of P- and S-waves
 
-c_ratio=1 #2/3                  #Ratio c_s/c_p
+c_ratio=2/3 #2/3                #Ratio c_s/c_p
 
 
 #~~~~~~~~~~~~~~Window Parameters~~~~~~~~~~~~~~#
 
-NoW=5                          #Number of total time windows
-NoT=2                           #Number of runs without update of WF (test)
+NoW=NoR                         #Number of total time windows
+NoT=NoR//10                     #Number of runs without update of WF (test)
 
 NoE=1                           #Number of wave events per time window
 
@@ -82,7 +84,7 @@ randomlyPlaced=False            #Determines if events are shifted around insed t
 
 #~~~~~~~~~~~~~~Pending~~~~~~~~~~~~~~#
 
-add_cavern_term_to_force=True  #Does the shift of the cavern add to the force?
+add_cavern_term_to_force=True   #Does the shift of the cavern add to the force?
 whichMirror=1                   #
 
 
@@ -129,6 +131,8 @@ class ReadData:
 data=ReadData(tag, folder)
 if useGPU:
     device=torch.device("cuda")
+else:
+    device=torch.device("cpu")
 
 
 #~~~~~~~~~~~~~~Read parameters and constants~~~~~~~~~~~~~~#
@@ -141,27 +145,27 @@ else:
     
 isMonochromatic=data.dictionary["isMonochromatic"]
 
-NoR=min(int(data.dictionary["NoR"]),NoR)            #Number of runs/realizations
-NoT=min(int(data.dictionary["NoR"])-3,NoT)            #Number of runs without update of WF
+NoR=min(int(data.dictionary["NoR"]),NoR)        #Number of runs/realizations
+NoT=min(int(data.dictionary["NoR"])-3,NoT)      #Number of runs without update of WF
 
-
+#constants
 pi=torch.pi
 G=co.gravitational_constant
 
 M=data.dictionary["M"]
 rho=data.dictionary["rho"]
 
-numerical_cavern_factor=-4*pi/3*G*M*rho    #force from shift of cavern per total density
+numerical_cavern_factor=-4*pi/3*G*M*rho         #force from shift of cavern per total density
 
-c_p=data.dictionary["c_p"]                        #sound velocity in rock  #6000 m/s
+c_p=data.dictionary["c_p"]                      #sound velocity in rock  #6000 m/s
 c_s=c_p*c_ratio
 
 
 L=data.dictionary["L"]
 
-tmax=data.dictionary["t_max"]    #time of simulation
+tmax=data.dictionary["t_max"]                   #time of simulation
 Nt=int(data.dictionary["Nt"])
-dt=tmax/Nt                      #temporal stepwidth
+dt=tmax/Nt                                      #temporal stepwidth
 
 if twindow==None or twindow<0:
     Ntwindow=int(Nt*time_window_multiplier)
@@ -176,35 +180,46 @@ mirror_directions=data.dictionary["mirror_directions"]
 mirror_count=len(mirror_positions)
 
 
-time=torch.tensor(np.linspace(0,tmax,Nt,endpoint=False))
+time=torch.tensor(np.linspace(0,tmax,Nt,endpoint=False), device=device)
 
 
 #~~~~~~~~~~~~~~Load data set~~~~~~~~~~~~~~#
   
 #mirror forces
-all_forces=np.zeros((mirror_count,int(NoR),Nt))
+all_bulk_forces=np.zeros((NoR,mirror_count,Nt))
 for mirror in range(mirror_count):
-    all_forces[mirror]=np.load(folder+"/wave_event_result_force_"+str(mirror)+"_"+tag+".npy", mmap_mode='r')[:NoR].copy()
-all_forces=torch.tensor(all_forces)
+    all_bulk_forces[:,mirror]=np.load(folder+"/wave_event_result_force_"+str(mirror)+"_"+tag+".npy", mmap_mode='r')[:NoR].copy()
+all_bulk_forces=torch.tensor(all_bulk_forces,device=device)
 
 #wave events
-all_polar_angles=torch.tensor(np.load(folder+"/wave_event_data_polar_angle_"+tag+".npy", mmap_mode='r')[:NoR].copy())
-all_azimuthal_angles=torch.tensor(np.load(folder+"/wave_event_data_azimuthal_angle_"+tag+".npy", mmap_mode='r')[:NoR].copy())
-all_x0s=torch.tensor(np.load(folder+"/wave_event_data_x0_"+tag+".npy", mmap_mode='r')[:NoR].copy())
-all_t0s=torch.tensor(np.load(folder+"/wave_event_data_t0_"+tag+".npy", mmap_mode='r')[:NoR].copy())
+all_polar_angles=torch.tensor(np.load(folder+"/wave_event_data_polar_angle_"+tag+".npy", mmap_mode='r')[:NoR].copy(), device=device)
+all_azimuthal_angles=torch.tensor(np.load(folder+"/wave_event_data_azimuthal_angle_"+tag+".npy", mmap_mode='r')[:NoR].copy(), device=device)
 
-all_As=torch.tensor(np.load(folder+"/wave_event_data_A_"+tag+".npy", mmap_mode='r')[:NoR].copy())
-all_phases=torch.tensor(np.load(folder+"/wave_event_data_phase_"+tag+".npy", mmap_mode='r')[:NoR].copy())
-all_fs=torch.tensor(np.load(folder+"/wave_event_data_f0_"+tag+".npy", mmap_mode='r')[:NoR].copy())
-all_sigmafs=torch.tensor(np.load(folder+"/wave_event_data_sigmaf_"+tag+".npy", mmap_mode='r')[:NoR].copy())
+all_x0s=torch.tensor(np.load(folder+"/wave_event_data_x0_"+tag+".npy", mmap_mode='r')[:NoR].copy(), device=device)
+all_t0s=torch.tensor(np.load(folder+"/wave_event_data_t0_"+tag+".npy", mmap_mode='r')[:NoR].copy(), device=device)
+
+all_As=torch.tensor(np.load(folder+"/wave_event_data_A_"+tag+".npy", mmap_mode='r')[:NoR].copy(), device=device)
+all_phases=torch.tensor(np.load(folder+"/wave_event_data_phase_"+tag+".npy", mmap_mode='r')[:NoR].copy(), device=device)
+all_fs=torch.tensor(np.load(folder+"/wave_event_data_f0_"+tag+".npy", mmap_mode='r')[:NoR].copy(), device=device)
+all_sigmafs=torch.tensor(np.load(folder+"/wave_event_data_sigmaf_"+tag+".npy", mmap_mode='r')[:NoR].copy(), device=device)
 
 #P and S
-all_s_polarisation=torch.tensor(np.load(folder+"/wave_event_data_s_polarization_"+tag+".npy", mmap_mode='r')[:NoR].copy())
+all_s_polarization=torch.tensor(np.load(folder+"/wave_event_data_s_polarization_"+tag+".npy", mmap_mode='r')[:NoR].copy(), device=device)
 
 all_is_s=np.random.random(NoR)>p
-all_cs=torch.tensor(c_p*(1-all_is_s)+c_s*all_is_s)
+all_is_s=torch.tensor(all_is_s, device=device)
+all_cs=c_p*(all_is_s==False)+c_s*all_is_s
 
+#other preparations
+all_sin_polar=torch.sin(all_polar_angles)
+all_cos_polar=torch.cos(all_polar_angles)
+all_sin_azimuthal=torch.sin(all_azimuthal_angles)
+all_cos_azimuthal=torch.cos(all_azimuthal_angles)
+all_sin_s_polarization=torch.sin(all_s_polarization)
+all_cos_s_polarization=torch.cos(all_s_polarization)
 
+all_forces=torch.zeros((NoR,mirror_count,Nt), device=device)
+all_seismometer_data=torch.zeros((NoR,NoS,3,Nt), device=device)
 
 ############################################
 #~~~~~~~~~~~~~~Wave functions~~~~~~~~~~~~~~#
@@ -225,23 +240,23 @@ def gaussian_wave_packet(x,t,x0,t0,A,exp_const,sin_const,c,phase=0):
 
 #~~~~~~~~~~~~~~Analytical displacement functions~~~~~~~~~~~~~~#
 
-def gaussian_wave_packet_displacement(x,t,x0,t0,f0,sigmaf,c,A,phase=0):
+def gaussian_wave_packet_displacement(x,t,x0,t0,f0,sigmaf,c,A,phase):
     
     diff = (x - x0) / c - (t - t0)
     
-    VF = 1/(np.sqrt(2*pi)*sigmaf)*torch.tensor(1/2 * A * c_p * torch.exp(torch.tensor(-1j * phase - f0**2 / (2 * sigmaf**2))))
+    VF = 1/(math.sqrt(2*pi)*sigmaf)*1/2 * A * c_p * torch.exp(-1j * phase - f0**2 / (2 * sigmaf**2))
     
-    if phase==0:
-        wave = VF * torch.imag(torch.tensor(sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf))))
+    if torch.all(phase==0):
+        wave = VF * torch.imag(sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (math.sqrt(2) * sigmaf)))
     else:
-        wave = -VF/2 * 1j * (sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (np.sqrt(2) * sigmaf)) - np.exp(2 * 1j * phase) * sp.erf((2*pi * sigmaf**2 * diff - 1j * f0) / (np.sqrt(2) * sigmaf)))
+        wave = -VF/2 * 1j * (sp.erf((2*pi * sigmaf**2 * diff + 1j * f0) / (math.sqrt(2) * sigmaf)) - np.exp(2 * 1j * phase) * sp.erf((2*pi * sigmaf**2 * diff - 1j * f0) / (math.sqrt(2) * sigmaf)))
     return torch.real(wave)
 
-def monochromatic_wave_displacement(x,t,x0,t0,f0,c,A,phase=0):
+def monochromatic_wave_displacement(x,t,x0,t0,f0,c,A,phase):
     
     diff = (x - x0) / c - (t - t0)
     
-    wave=A*c_p/2/pi/f0*np.cos(2*pi*f0*diff+phase)
+    wave=A*c_p/2/pi/f0*torch.cos(2*pi*f0*diff+phase)
     return wave
 
 
@@ -284,7 +299,7 @@ class Window:
         self.ID=windowID
         self.Ntwindow=Ntwindow
         self.NoE=NoE
-        self.seismometer_positions=torch.tensor(seismometer_positions).reshape(NoS,3)
+        self.seismometer_positions=torch.tensor(np.array(seismometer_positions)).reshape(NoS,3)
         self.NoS=NoS
         self.time=np.linspace(0,(self.Ntwindow-1)*dt,self.Ntwindow)
         
@@ -311,7 +326,8 @@ class Window:
         startIndex = np.random.randint(-Nt,self.Ntwindow,self.NoE)
         self.startTime = startIndex*dt
         for n in range(self.NoE):
-            forces,displacements = getForceAndDisplacement(self.windowR[n], self.seismometer_positions)
+            forces, displacements = all_forces[self.windowR[n]], all_seismometer_data[self.windowR[n]]
+            #forces,displacements = getForceAndDisplacement(self.windowR[n], self.seismometer_positions)
             fromWindowindex=max(0,startIndex[n])
             toWindowindex=min(self.Ntwindow,startIndex[n]+Nt)
             fromRunIndex=max(0,-startIndex[n])
@@ -323,7 +339,8 @@ class Window:
     def createStaticTimeWindow(self):
         self.startTime = np.zeros(self.NoE)*dt
         for n in range(self.NoE):
-            forces,displacements = getForceAndDisplacement(self.windowR[n], self.seismometer_positions)
+            forces, displacements = all_forces[self.windowR[n]], all_seismometer_data[self.windowR[n]]
+            #forces,displacements = getForceAndDisplacement(self.windowR[n], self.seismometer_positions)
             self.forces[:,:Nt]+=forces[:,:Ntwindow] 
             self.displacements[:,:,:Nt]+=displacements[:,:,:Ntwindow]
         self.addNoise()
@@ -334,11 +351,11 @@ class Window:
             #sigma=np.sqrt(torch.mean(plane_wave_displacement_analytic(0, 0, 0, 0, all_fs[self.windowR], all_sigmafs[self.windowR], all_cs[self.windowR], all_As[self.windowR])**2))/SNR*np.sqrt(self.Ntwindow)
             #sigma=np.sqrt(np.mean(np.max(np.sqrt(np.sum(np.array(self.displacements)**2,axis=1)),axis=-1)**2))/SNR*np.sqrt(self.Ntwindow)
             #maximum=float(-plane_wave_displacement_analytic(0, 0, 0, 0, all_fs[self.windowR], all_sigmafs[self.windowR], all_cs[self.windowR], all_As[self.windowR]))
-            sigma=float(torch.sqrt(torch.mean((all_As[self.windowR]*all_cs[self.windowR]/2/pi/all_fs[self.windowR]/SNR*np.sqrt(self.Ntwindow)/np.sqrt(3)/2)**2)))
+            sigma=float(torch.sqrt(torch.mean((all_As[self.windowR]*all_cs[self.windowR]/2/pi/all_fs[self.windowR]/SNR*math.sqrt(self.Ntwindow)/math.sqrt(3)/2)**2)))
             #sigma=np.sqrt(np.mean(np.max(np.array(self.displacements),axis=-1)**2))/SNR*np.sqrt(self.Ntwindow)/2
             #sigma=np.sqrt(np.mean(maximum**2))/SNR*np.sqrt(self.Ntwindow)/2/np.sqrt(3)
         else:
-            sigma=np.sqrt(np.mean(np.max(np.array(self.displacements),axis=-1)**2))/SNR*np.sqrt(self.Ntwindow)/2
+            sigma=np.sqrt(np.mean(np.max(np.array(self.displacements),axis=-1)**2))/SNR*math.sqrt(self.Ntwindow)/2
             #sigma=np.sqrt(torch.mean(gauss_wave_packet_displacement_analytic(0, 0, 0, 0, all_fs[self.windowR], all_sigmafs[self.windowR], all_cs[self.windowR], all_As[self.windowR])**2))/SNR*np.sqrt(self.Ntwindow)/2
         self.displacements+=torch.tensor(np.random.normal(self.displacements*0,sigma))
     
@@ -350,7 +367,7 @@ class Window:
         dx=2*Lzoom/self.NxPlot
         x=torch.linspace(-Lzoom+dx/2,Lzoom-dx/2,self.NxPlot)
         y=torch.linspace(-Lzoom+dx/2,Lzoom-dx/2,self.NxPlot)
-        xyz=torch.meshgrid(x,y)
+        xyz=torch.meshgrid(x,y,indexing="ij")
         self.x2d=xyz[1]
         self.y2d=xyz[0]
         
@@ -358,7 +375,7 @@ class Window:
         self.density_fluctuations=torch.zeros((self.NxPlot,self.NxPlot))
         for n in range(self.NoE):
             R=self.windowR[n]
-            kx2D=np.cos(all_polar_angles[R])*np.sin(all_azimuthal_angles[R])*self.x2d+np.sin(all_polar_angles[R])*np.sin(all_azimuthal_angles[R])*self.y2d
+            kx2D=all_cos_polar[R]*all_sin_azimuthal[R]*self.x2d+all_sin_polar[R]*all_sin_azimuthal[R]*self.y2d
             self.density_fluctuations+=gaussian_wave_packet(kx2D, timestep*dt, all_x0s[R], self.startTime[n], all_As[R], -2*pi**2*all_sigmafs[R]**2, 2*pi*all_fs[R], all_cs[R], all_phases[R])
     
     def vizualizeWindow(self, animate=True, timestep=0, Lzoom=1000, NxPlot=100):
@@ -536,251 +553,249 @@ class Window:
 
 #~~~~~~~~~~~~~~Force and displacement~~~~~~~~~~~~~~#
 
-def getForceAndDisplacement(R,seismometer_positions):
+#finalize forces   
+def precalculateForce(): 
     
-    #seperate event
-    forces=torch.tensor(all_forces[:,R])
-    seismometer_data=[]                 #x-, y- and z-displacement for each seismometer
-    for s in range(NoS):
-        seismometer_data.append([[],[],[]])
-        
-    polar_angle=all_polar_angles[R]
-    azimuthal_angle=all_azimuthal_angles[R]
-    x0=all_x0s[R]
-    t0=all_t0s[R]
-
-    is_s=all_is_s[R]
-    c=all_cs[R]
-    s_polarisation=all_s_polarisation[R]
-    
-    A=all_As[R]
-    phase=all_phases[R]
-    f0=all_fs[R]
-    sigmaf=all_sigmafs[R]
-    
-    seismometer_positions=torch.tensor(seismometer_positions).reshape(NoS,3)
-    
-    #force finalization
-    if is_s:
-        forces*=0
-        
     if add_cavern_term_to_force:
-        for mirror in range(mirror_count): 
-            pos=mirror_positions[mirror]
-            di=mirror_directions[mirror]
-            projectedMirrorPosition=pos[0]*np.cos(polar_angle)*np.sin(azimuthal_angle)+pos[1]*np.sin(polar_angle)*np.sin(azimuthal_angle)+pos[2]*np.cos(azimuthal_angle)
-            if isMonochromatic:
-                absoluteDisplacement=monochromatic_wave_displacement(projectedMirrorPosition, time, x0, t0, f0, c, A, phase)
-            else:
-                absoluteDisplacement=gaussian_wave_packet_displacement(projectedMirrorPosition, time, x0, t0, f0, sigmaf, c, A, phase)
-            if not is_s:
-                forces[mirror]+=(np.cos(polar_angle)*np.sin(azimuthal_angle)*di[0]+np.sin(polar_angle)*np.sin(azimuthal_angle)*di[1]+np.cos(azimuthal_angle)*di[2])*absoluteDisplacement*numerical_cavern_factor
-            else:
-                forces[mirror]+=(-np.sin(polar_angle)*np.sin(s_polarisation)+np.cos(polar_angle)*np.cos(azimuthal_angle)*np.cos(s_polarisation))*di[0]*absoluteDisplacement*numerical_cavern_factor
-                forces[mirror]+=(np.cos(polar_angle)*np.sin(s_polarisation)+np.sin(polar_angle)*np.cos(azimuthal_angle)*np.cos(s_polarisation))*di[1]*absoluteDisplacement*numerical_cavern_factor
-                forces[mirror]+=(-np.sin(azimuthal_angle)*np.cos(s_polarisation))*di[2]*numerical_cavern_factor
-                
-    #evaluate seismometer data
-    seismometer_data=torch.zeros((NoS,3,Nt))
-    for s in range(NoS):
-        projectedSeismometerPosition=seismometer_positions[s][0]*np.cos(polar_angle)*np.sin(azimuthal_angle)+seismometer_positions[s][1]*np.sin(polar_angle)*np.sin(azimuthal_angle)+seismometer_positions[s][2]*np.cos(azimuthal_angle)
-        if isMonochromatic:
-            absoluteDisplacement=monochromatic_wave_displacement(projectedSeismometerPosition, time, x0, t0, f0, c, A)
-        else:
-            absoluteDisplacement=gaussian_wave_packet_displacement(projectedSeismometerPosition, time, x0, t0, f0, sigmaf, c, A)
-        if not is_s:
-            seismometer_data[s,0]+=np.cos(polar_angle)*np.sin(azimuthal_angle)*absoluteDisplacement
-            seismometer_data[s,1]+=np.sin(polar_angle)*np.sin(azimuthal_angle)*absoluteDisplacement
-            seismometer_data[s,2]+=np.cos(azimuthal_angle)*absoluteDisplacement
-        else:
-            seismometer_data[s,0]+=(-np.sin(polar_angle)*np.sin(s_polarisation)+np.cos(polar_angle)*np.cos(azimuthal_angle)*np.cos(s_polarisation))*absoluteDisplacement
-            seismometer_data[s,1]+=(np.cos(polar_angle)*np.sin(s_polarisation)+np.sin(polar_angle)*np.cos(azimuthal_angle)*np.cos(s_polarisation))*absoluteDisplacement
-            seismometer_data[s,2]+=(-np.sin(azimuthal_angle)*np.cos(s_polarisation))*absoluteDisplacement
         
-    return forces,seismometer_data
+        #get local displacement (at each mirror)
+        pos=torch.tensor(mirror_positions, device=device).reshape(1,mirror_count,3)
+        di=torch.tensor(mirror_directions, device=device).reshape(1,mirror_count,3)
+        projectedMirrorPosition =pos[:,:,0]*(all_cos_polar*all_sin_azimuthal).reshape(NoR,1)
+        projectedMirrorPosition+=pos[:,:,1]*(all_sin_polar*all_sin_azimuthal).reshape(NoR,1)
+        projectedMirrorPosition+=pos[:,:,2]*(all_cos_azimuthal).reshape(NoR,1)
+        
+        if isMonochromatic:
+            absoluteDisplacement=monochromatic_wave_displacement(projectedMirrorPosition.reshape(NoR,mirror_count,1), time.reshape(1,1,Nt), all_x0s.reshape(NoR,1,1), all_t0s.reshape(NoR,1,1), all_fs.reshape(NoR,1,1), all_cs.reshape(NoR,1,1), all_As.reshape(NoR,1,1), all_phases.reshape(NoR,1,1))
+        else:
+            absoluteDisplacement=gaussian_wave_packet_displacement(projectedMirrorPosition.reshape(NoR,mirror_count,1), time.reshape(1,1,Nt), all_x0s.reshape(NoR,1,1), all_t0s.reshape(NoR,1,1), all_fs.reshape(NoR,1,1), all_sigmafs.reshape(NoR,1,1), all_cs.reshape(NoR,1,1), all_As.reshape(NoR,1,1), all_phases.reshape(NoR,1,1))
+        
+        #cavern acceleration parallel to local displacement
+        all_p_cavern_forces =di[:,:,0]*(all_cos_polar*all_sin_azimuthal).reshape(NoR,1)
+        all_p_cavern_forces+=di[:,:,1]*(all_sin_polar*all_sin_azimuthal).reshape(NoR,1)
+        all_p_cavern_forces+=di[:,:,2]*(all_cos_azimuthal).reshape(NoR,1)
+        all_p_cavern_forces=all_p_cavern_forces.reshape(NoR,mirror_count,1)*absoluteDisplacement*numerical_cavern_factor
+        
+        #cavern acceleration perpendicular to local displacement
+        all_s_cavern_forces =di[:,:,0]*(-all_sin_polar*all_sin_s_polarization+all_cos_polar*all_cos_azimuthal*all_cos_s_polarization).reshape(NoR,1)
+        all_s_cavern_forces+=di[:,:,1]*(all_cos_polar*all_sin_s_polarization+all_sin_polar*all_cos_azimuthal*all_cos_s_polarization).reshape(NoR,1)
+        all_s_cavern_forces+=di[:,:,2]*(-all_sin_azimuthal*all_cos_s_polarization).reshape(NoR,1)
+        all_s_cavern_forces=all_s_cavern_forces.reshape(NoR,mirror_count,1)*absoluteDisplacement*numerical_cavern_factor
+        
+        #add P- and S-contributions
+        all_forces=(all_bulk_forces+all_p_cavern_forces)*(all_is_s==False).reshape(NoR,1,1) + all_s_cavern_forces*(all_is_s).reshape(NoR,1,1)
+        
+    else:
+        all_forces=all_bulk_forces*(all_is_s==False).reshape(NoR,1,1)
+        
+    return all_forces
+
+
+#extract displacement at seismometer positions
+def getDisplacement(seismometer_positions):
+    
+    #get total displacement at each seismometer
+    pos=torch.tensor(np.array(seismometer_positions), device=device).reshape(1,NoS,3)
+    projectedSeismometerPosition =pos[:,:,0]*(all_cos_polar*all_sin_azimuthal).reshape(NoR,1)
+    projectedSeismometerPosition+=pos[:,:,1]*(all_sin_polar*all_sin_azimuthal).reshape(NoR,1)
+    projectedSeismometerPosition+=pos[:,:,2]*(all_cos_azimuthal).reshape(NoR,1)
+    
+    if isMonochromatic:
+        absoluteDisplacement=monochromatic_wave_displacement(projectedSeismometerPosition.reshape(NoR,NoS,1), time.reshape(1,1,Nt), all_x0s.reshape(NoR,1,1), all_t0s.reshape(NoR,1,1), all_fs.reshape(NoR,1,1), all_cs.reshape(NoR,1,1), all_As.reshape(NoR,1,1), all_phases.reshape(NoR,1,1))
+    else:
+        absoluteDisplacement=gaussian_wave_packet_displacement(projectedSeismometerPosition.reshape(NoR,NoS,1), time.reshape(1,1,Nt), all_x0s.reshape(NoR,1,1), all_t0s.reshape(NoR,1,1), all_fs.reshape(NoR,1,1), all_sigmafs.reshape(NoR,1,1), all_cs.reshape(NoR,1,1), all_As.reshape(NoR,1,1), all_phases.reshape(NoR,1,1))
+    
+    #project onto 3 axes
+    all_p_displacements=torch.zeros((NoR,NoS,3,Nt), device=device)
+    all_p_displacements[:,:,0,:]+=(all_cos_polar*all_sin_azimuthal).reshape(NoR,1,1)
+    all_p_displacements[:,:,1,:]+=(all_sin_polar*all_sin_azimuthal).reshape(NoR,1,1)
+    all_p_displacements[:,:,2,:]+=(all_cos_azimuthal).reshape(NoR,1,1)
+    all_p_displacements=all_p_displacements*absoluteDisplacement.reshape(NoR,NoS,1,Nt)
+    
+    all_s_displacements=torch.zeros((NoR,NoS,3,Nt), device=device)
+    all_s_displacements[:,:,0,:]+=(-all_sin_polar*all_sin_s_polarization+all_cos_polar*all_cos_azimuthal*all_cos_s_polarization).reshape(NoR,1,1)
+    all_s_displacements[:,:,1,:]+=(all_cos_polar*all_sin_s_polarization+all_sin_polar*all_cos_azimuthal*all_cos_s_polarization).reshape(NoR,1,1)
+    all_s_displacements[:,:,2,:]+=(-all_sin_azimuthal*all_cos_s_polarization).reshape(NoR,1,1)
+    all_s_displacements=all_s_displacements*absoluteDisplacement.reshape(NoR,NoS,1,Nt)
+    
+    all_displacements=all_p_displacements*(all_is_s==False).reshape(NoR,1,1,1) + all_s_displacements*(all_is_s).reshape(NoR,1,1,1)
+    
+    return all_displacements
 
 
 #~~~~~~~~~~~~~~Wiener filter~~~~~~~~~~~~~~#
 
-def frequencyWienerFilter(seismometer_positions,NoS,freq,SNR=1e10,p=1,mirror=0,trainingIndices=NoW-NoT):
+#training of Wiener filter in frequency space
+def frequencyWienerFilter(all_seismometer_data,NoS,freq,mirror,trainingIndices=(0,NoW-NoT)):   
     
-    #preparation
-    signal_data_CPSD=torch.zeros((3*NoS),dtype = torch.complex64)
-    data_self_CPSD=torch.zeros((3*NoS,3*NoS),dtype = torch.complex64)
-    signal_self_PSD=0
-    CFS=0
+    #Fourier transform
+    NoTr=trainingIndices[1]-trainingIndices[0]
+    freqs=torch.fft.fftfreq(time.shape[-1],time[1]-time[0])
+    signalFS=torch.fft.fft(all_forces[trainingIndices[0]:trainingIndices[1],mirror])[:,np.argmax(freqs>=freq)]
+    dataFS=torch.fft.fft(all_seismometer_data)[trainingIndices[0]:trainingIndices[1],:,:,np.argmax(freqs>=freq)].reshape((NoTr,NoS*3))
     
-    nan_count=0
+    nan_count=torch.sum(torch.logical_or(torch.isnan(signalFS),torch.any(torch.isnan(dataFS),axis=-1)))
     
-    seismometer_positions=torch.tensor(seismometer_positions)
-    seismometer_positions.reshape((NoS,3))
-    
-    if type(trainingIndices)==type(1):
-        trainingIndices=range(trainingIndices)
-    
-    for W in trainingIndices:
-        #create data and signal
-        #forces, seismometer_data=getForceAndDisplacement(W, seismometer_positions)
-        window=Window(W,Ntwindow=Ntwindow,NoE=NoE,seismometer_positions=seismometer_positions,NoS=NoS,randomlyPlaced=randomlyPlaced)
-        forces, seismometer_data=window.forces,window.displacements #getForceAndDisplacement(R, seismometer_positions)
+    #CPSDs
+    all_signal_self_PSD=torch.abs(signalFS)**2
+    all_signal_data_CPSD=torch.conj(dataFS)*signalFS.reshape(NoTr,1)
+    all_data_self_CPSD=torch.einsum("ai,ak->aik",torch.conj(dataFS),dataFS)
         
-        if torch.any(torch.isnan(seismometer_data)) or torch.any(torch.isnan(forces)):
-            nan_count+=1
-            continue
+    signal_self_PSD=torch.nanmean(torch.real(all_signal_self_PSD),axis=0)
+    signal_data_CPSD=torch.nanmean(torch.real(all_signal_data_CPSD),axis=0)+1j*torch.nanmean(torch.imag(all_signal_data_CPSD),axis=0)
+    data_self_CPSD=torch.nanmean(torch.real(all_data_self_CPSD),axis=0)+1j*torch.nanmean(torch.imag(all_data_self_CPSD),axis=0)
     
-        #FFT
-        freqs=torch.fft.fftfreq(time.shape[-1],time[1]-time[0])
-        signalFS=torch.fft.fft(forces[mirror])[np.argmax(freqs>=freq)]
-        dataFS=torch.fft.fft(seismometer_data)[:,:,np.argmax(freqs>=freq)].reshape(NoS*3)
-
-        #CPSDs
-        signal_data_CPSD=signal_data_CPSD*CFS/(CFS+1)+torch.conj(dataFS)*signalFS/(CFS+1)
-        data_self_CPSD=data_self_CPSD*CFS/(CFS+1)+torch.einsum("i,k->ik",torch.conj(dataFS),dataFS)/(CFS+1)
-        signal_self_PSD=signal_self_PSD*CFS/(CFS+1)+signalFS*torch.conj(signalFS)/(CFS+1)
-        CFS+=1
-        
-    #WF
+    
+    #Wiener filter    
     inv_data_self_CPSD=torch.linalg.inv(data_self_CPSD)
+    
     WF_FS=torch.einsum("ij,j->i",inv_data_self_CPSD,signal_data_CPSD)
     
-    WFDict={"signal_data_CPSD":signal_data_CPSD,"data_self_CPSD":data_self_CPSD,"signal_self_PSD":signal_self_PSD,"inv_data_self_CPSD":inv_data_self_CPSD,"WF":WF_FS,"nan_count":nan_count}
-    
+    WFDict={"signal_data_CPSD_"+str(mirror):signal_data_CPSD,"data_self_CPSD_"+str(mirror):data_self_CPSD,"signal_self_PSD_"+str(mirror):signal_self_PSD,"inv_data_self_CPSD_"+str(mirror):inv_data_self_CPSD,"WF_"+str(mirror):WF_FS,"nan_count_training_"+str(mirror):nan_count}
     return WF_FS, WFDict
-    
 
-def evaluateFrequencyWienerFilter(WFDict,seismometer_positions,NoS,freq,SNR=1e10,p=1,mirror=0,testIndices=NoT):
+
+#test Wiener filter performance in frequency space
+def evaluateFrequencyWienerFilter(WFDict,all_seismometer_data,NoS,freq,mirror,testIndices=(NoW-NoT,NoW)):
     
     #preparations
-    WF_FS=WFDict["WF"]
-    signal_data_CPSD=WFDict["signal_data_CPSD"]
-    signal_self_PSD=WFDict["signal_self_PSD"]
-    inv_data_self_CPSD=WFDict["inv_data_self_CPSD"]
+    WF_FS=WFDict["WF_"+str(mirror)]
+    signal_data_CPSD=WFDict["signal_data_CPSD_"+str(mirror)]
+    signal_self_PSD=WFDict["signal_self_PSD_"+str(mirror)]
+    inv_data_self_CPSD=WFDict["inv_data_self_CPSD_"+str(mirror)]
     
-    errorarray=[]
-    signalarray=[]
+    #Fourier transform
+    NoTr=testIndices[1]-testIndices[0]
+    freqs=torch.fft.fftfreq(time.shape[-1],time[1]-time[0])
+    signalFS=torch.fft.fft(all_forces[testIndices[0]:testIndices[1],mirror])[:,np.argmax(freqs>=freq)]
+    dataFS=torch.fft.fft(all_seismometer_data)[testIndices[0]:testIndices[1],:,:,np.argmax(freqs>=freq)].reshape((NoTr,NoS*3))
     
-    nan_count=WFDict["nan_count"]
+    nan_count=torch.sum(torch.logical_or(torch.isnan(signalFS),torch.any(torch.isnan(dataFS),axis=-1)))
     
-    seismometer_positions=torch.tensor(seismometer_positions)
-    seismometer_positions.reshape((NoS,3))
-    
-    if type(testIndices)==type(1):
-        testIndices=range(NoW-testIndices,NoW)
-    
-    for W in testIndices:
-        #create data and signal
-        #forces, seismometer_data=getForceAndDisplacement(W, seismometer_positions)
-        window=Window(W,Ntwindow=Ntwindow,NoE=NoE,seismometer_positions=seismometer_positions,NoS=NoS,randomlyPlaced=randomlyPlaced)
-        forces, seismometer_data=window.forces,window.displacements #getForceAndDisplacement(R, seismometer_positions)
-        
-        if torch.any(torch.isnan(seismometer_data)) or torch.any(torch.isnan(forces)):
-            nan_count+=1
-            continue
-        
-        #FFT
-        freqs=torch.fft.fftfreq(time.shape[-1],time[1]-time[0])
-        signalFS=torch.fft.fft(forces[mirror])[np.argmax(freqs>=freq)]
-        dataFS=torch.fft.fft(seismometer_data)[:,:,np.argmax(freqs>=freq)].reshape(NoS*3)
-
-        #estimate
-        estimateFS=torch.einsum("i,i->",WF_FS,dataFS)
-        
-        #save things
-        errorarray.append(torch.abs(signalFS-estimateFS)**2)
-        signalarray.append(np.abs(signalFS)**2)
+    #signal estimation
+    estimateFS=torch.einsum("i,ji->j",WF_FS,dataFS)
+    errorarray=torch.abs(signalFS-estimateFS)**2
+    signalarray=torch.abs(signalFS)**2
     
     #calculate metrics
-    errorarray=torch.tensor(errorarray)
-    signalarray=torch.tensor(signalarray)
     residual_exp=torch.sqrt(torch.mean(errorarray)/torch.mean(signalarray))
-    residual_exp_err=0.5*torch.sqrt(residual_exp)/np.sqrt(len(errorarray))*torch.sqrt((torch.std(errorarray)/torch.mean(errorarray))**2+(torch.std(signalarray)/torch.mean(signalarray))**2)
-    residual_theo=torch.sqrt(1-torch.matmul(np.conj(signal_data_CPSD),torch.matmul(inv_data_self_CPSD,signal_data_CPSD))/signal_self_PSD)
-    residual_dict={"residual_exp":float(residual_exp), "residual_exp_err":float(residual_exp_err), "residual_theo":float(np.abs(residual_theo)), "nan_count":nan_count}
+    residual_exp_err=0.5*torch.sqrt(residual_exp)/math.sqrt(len(errorarray))*torch.sqrt((torch.std(errorarray)/torch.mean(errorarray))**2+(torch.std(signalarray)/torch.mean(signalarray))**2)
+    residual_theo=torch.sqrt(1-torch.matmul(torch.conj(signal_data_CPSD),torch.matmul(inv_data_self_CPSD,signal_data_CPSD))/signal_self_PSD)
+    residual_dict={"residual_exp_"+str(mirror):float(residual_exp), "residual_exp_err_"+str(mirror):float(residual_exp_err), "residual_theo_"+str(mirror):torch.abs(residual_theo).item(), "nan_count_test_"+str(mirror):nan_count}
     residual_dict.update(WFDict)
     return residual_dict
-    
+
 
 #~~~~~~~~~~~~~~Residual~~~~~~~~~~~~~~#
 
-#single mirror residual
-def residual(seismometer_positions, NoS, freq, SNR=1e10, p=1, mirror=0, NoTr=NoW-NoT, NoT=NoT,add_info=True):
-    
-    WF,WFDict=frequencyWienerFilter(seismometer_positions, NoS, freq,SNR,p,mirror,NoTr)
-    wienerFilterEvaluationDict=evaluateFrequencyWienerFilter(WFDict,seismometer_positions,NoS,freq,SNR,p,mirror,NoT)
+def singleMirrorResidual(all_seismometer_data,NoS,freq,mirror,add_info=True):
+    WF,WFDict=frequencyWienerFilter(all_seismometer_data, NoS, freq, mirror)
+    wienerFilterEvaluationDict=evaluateFrequencyWienerFilter(WFDict,all_seismometer_data,NoS,freq,mirror)
     
     if add_info:
-        return wienerFilterEvaluationDict["residual_exp"],wienerFilterEvaluationDict
+        return wienerFilterEvaluationDict["residual_exp_"+str(mirror)],wienerFilterEvaluationDict
     else:
-        return wienerFilterEvaluationDict["residual_exp"]
+        return wienerFilterEvaluationDict["residual_exp_"+str(mirror)]
+    
+    
+def totalResidual(seismometer_positions, NoS, freq, mirror="mean", add_info=True):
+    all_seismometer_data=getDisplacement(seismometer_positions)    
 
-#combination of mirrors
-def combinedResidual(seismometer_positions, NoS, freq, SNR=1e10, p=1, method="mean", NoTr=NoW-NoT, NoT=NoT):
-    
     results=[]
-    for mirror in mirror_count:
-        results.append(residual(seismometer_positions, NoS, freq, SNR, p, mirror, NoTr, NoT, False))
+    error=[]
+    results_theo=[]
+    total_dict={}
     
-    if method=="max":
-        return torch.max(results)
-    elif method=="mean":
-        return torch.mean(results)
+    
+    if type(mirror)==int:
+        mirr=[mirror]
+        mirror="max"
+    elif mirror=="mean" or mirror=="max":
+        mirr=range(mirror_count)
     else:
+        mirr=range(mirror_count)
+        mirror="mean"
         print("WARNING: unknown method in combinedResidual(). Using mean")
-        return torch.mean(results)
+    
+    for m in mirr:
+        res,dic=singleMirrorResidual(all_seismometer_data, NoS, freq, m, True)
+        results.append(res)
+        error.append(dic["residual_exp_err_"+str(m)])
+        results_theo.append(dic["residual_theo_"+str(m)])
+        total_dict.update(dic)
         
-        
+    if mirror=="max":
+        total_dict.update({"residual_exp":np.max(results)})
+        total_dict.update({"residual_exp_err":np.max(np.array(error)-(np.max(results)-np.array(results)))})
+        total_dict.update({"residual_theo":np.max(results_theo)})
+    else:
+        total_dict.update({"residual_exp":np.mean(results)})
+        total_dict.update({"residual_exp_err":np.sqrt(np.sum(np.array(error)**2)/len(error))})
+        total_dict.update({"residual_theo":np.mean(results_theo)})
+    
+    if add_info:
+        return total_dict["residual_exp"], total_dict
+    else:
+        return total_dict["residual_exp"]
+    
+    
 
 
 #############################################
 #~~~~~~~~~~~~~~Use the Dataset~~~~~~~~~~~~~~#
 #############################################
 
-
-#~~~~~~~~~~~~~~Calculate stuff~~~~~~~~~~~~~~#
-result,residual_dict=residual(state, NoS, freq, SNR, p, mirror=1)
-
-exampleWindow=Window(0,Ntwindow=Ntwindow,NoE=NoE,seismometer_positions=state,NoS=NoS,randomlyPlaced=randomlyPlaced)
-exampleWindow.vizualizeWindow(animate=False,timestep=199,Lzoom=6000)
-#exampleWindow.visualizeDisplacement(0)
-
-total_time=(systime.time()-total_start_time)/60
-print("#total time: "+str(total_time)+" min")
-
-
-#~~~~~~~~~~~~~~Save results~~~~~~~~~~~~~~#
-
-with open(saveas+".txt", "a+") as f:
-    f.write("dataset = "+tag+"\n")
-    f.write("NoR = "+str(NoR)+"\n")
-    f.write("N = "+str(NoS)+"\n")
-    f.write("f = "+str(freq)+"\n")
-    f.write("SNR = "+str(SNR)+"\n")
-    f.write("p = "+str(p)+"\n")
-    f.write("c_ratio = "+str(c_ratio)+"\n")
-    f.write("state = "+str(state)+"\n")
+if __name__=="__main__":
     
-    f.write("NoW = "+str(NoW)+"\n")
-    f.write("NoT = "+str(NoT)+"\n")
-    f.write("NoE = "+str(NoE)+"\n")
-    f.write("time_window_multiplier = "+str(time_window_multiplier)+"\n")
-    f.write("twindow = "+str(twindow)+"\n")
-    f.write("randomlyPlaced = "+str(randomlyPlaced)+"\n")
+    #~~~~~~~~~~~~~~Calculate stuff~~~~~~~~~~~~~~#
+    all_forces=precalculateForce()
     
-    f.write("add_cavern_term_to_force = "+str(add_cavern_term_to_force)+"\n")
-    f.write("whichMirror = "+str(whichMirror)+"\n")
+    all_seismometer_data=getDisplacement(state)
+    exampleWindow=Window(0,Ntwindow=Ntwindow,NoE=NoE,seismometer_positions=state,NoS=NoS,randomlyPlaced=randomlyPlaced)
+    exampleWindow.vizualizeWindow(animate=False,timestep=199,Lzoom=1000)
+    #exampleWindow.visualizeDisplacement(0)
     
-    f.write("residual_exp = "+str(result)+"\n")
-    f.write("residual_exp_err = "+str(residual_dict["residual_exp_err"])+"\n")
-    f.write("residual_theo = "+str(residual_dict["residual_theo"])+"\n")
+    result,residual_dict=totalResidual(state, NoS, freq, mirror=whichMirror)
     
-    f.write("WF = "+str(np.array(residual_dict["WF"]).tolist())+"\n")
-    f.write("data_self_CPSD = "+str(np.array(residual_dict["data_self_CPSD"]).tolist())+"\n")
-    f.write("signal_data_CPSD = "+str(np.array(residual_dict["signal_data_CPSD"]).tolist())+"\n")
-    f.write("signal_self_PSD = "+str(residual_dict["signal_self_PSD"].item())+"\n")
+    print(result)
+    total_time=(systime.time()-total_start_time)/60
+    print("#total time: "+str(total_time)+" min")
     
-    f.write("useGPU = "+str(useGPU)+"\n")
-    f.write("#runtime = "+str(total_time)+" min\n")
+    #~~~~~~~~~~~~~~Save results~~~~~~~~~~~~~~#
     
+    CPUdevice=torch.device("cpu")
     
-
-    
+    with open(saveas+".txt", "a+") as f:
+        f.write("dataset = "+tag+"\n")
+        f.write("NoR = "+str(NoR)+"\n")
+        f.write("N = "+str(NoS)+"\n")
+        f.write("f = "+str(freq)+"\n")
+        f.write("SNR = "+str(SNR)+"\n")
+        f.write("p = "+str(p)+"\n")
+        f.write("c_ratio = "+str(c_ratio)+"\n")
+        f.write("state = "+str(state)+"\n")
+        
+        f.write("NoW = "+str(NoW)+"\n")
+        f.write("NoT = "+str(NoT)+"\n")
+        f.write("NoE = "+str(NoE)+"\n")
+        f.write("time_window_multiplier = "+str(time_window_multiplier)+"\n")
+        f.write("twindow = "+str(twindow)+"\n")
+        f.write("randomlyPlaced = "+str(randomlyPlaced)+"\n")
+        
+        f.write("add_cavern_term_to_force = "+str(add_cavern_term_to_force)+"\n")
+        f.write("whichMirror = "+str(whichMirror)+"\n")
+        
+        f.write("residual_exp = "+str(result)+"\n")
+        f.write("residual_exp_err = "+str(residual_dict["residual_exp_err"])+"\n")
+        f.write("residual_theo = "+str(residual_dict["residual_theo"])+"\n")
+        
+        f.write("WF = "+str(np.array(residual_dict["WF_"+str(whichMirror)].to(device=CPUdevice)).tolist())+"\n")
+        f.write("data_self_CPSD = "+str(np.array(residual_dict["data_self_CPSD_"+str(whichMirror)].to(device=CPUdevice)).tolist())+"\n")
+        f.write("signal_data_CPSD = "+str(np.array(residual_dict["signal_data_CPSD_"+str(whichMirror)].to(device=CPUdevice)).tolist())+"\n")
+        f.write("signal_self_PSD = "+str(residual_dict["signal_self_PSD_"+str(whichMirror)].item())+"\n")
+        
+        f.write("useGPU = "+str(useGPU)+"\n")
+        f.write("#runtime = "+str(total_time)+" min\n")
+        
+        
+        
