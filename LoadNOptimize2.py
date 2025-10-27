@@ -554,6 +554,7 @@ def totalResidual(seismometer_positions, NoS, freq, mirror="mean", add_info=True
 if __name__=="__main__":
         
     #~~~~~~~~~~~~~~Calculate stuff~~~~~~~~~~~~~~#
+    all_forces=precalculateForce()
     
     bnd=1000
     lower_bound=[-bnd,-bnd,-300]
@@ -648,4 +649,5 @@ if __name__=="__main__":
     
 
     
+
     
